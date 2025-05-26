@@ -15,6 +15,7 @@ var builtinCmds = map[string]struct{}{
 	"exit": {},
 	"echo": {},
 	"type": {},
+	"pwd":  {},
 }
 
 func main() {
@@ -35,7 +36,7 @@ func main() {
 			if len(argv) > 1 {
 				code, err = strconv.Atoi(argv[1])
 				if err != nil {
-					fmt.Println("invalid arguments expected a number")
+					fmt.Fprintf(os.Stderr, "invalid arguments expected a number: %s", err.Error())
 					continue
 				}
 			}
@@ -63,15 +64,26 @@ func main() {
 				fmt.Printf("%s: not found\n", arg)
 			}
 
+		case "pwd":
+			pwd, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Println(pwd)
+
 		default:
 			if _, ok := findInPath(cmd); ok == true {
 				cmd := exec.Command(cmd, argv[1:]...)
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
-				cmd.Run()
+				err := cmd.Run()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error Executing: %v\n", err)
+				}
 				continue
 			}
-			fmt.Println(cmd + ": command not found")
+			fmt.Fprintf(os.Stderr, "%s: command not found\n", cmd)
 		}
 	}
 
