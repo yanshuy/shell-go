@@ -64,8 +64,8 @@ func main() {
 			}
 
 		default:
-			if file, ok := findInPath(cmd); ok == true {
-				cmd := exec.Command(file, argv[1:]...)
+			if _, ok := findInPath(cmd); ok == true {
+				cmd := exec.Command(cmd, argv[1:]...)
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
 				cmd.Run()

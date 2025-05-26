@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -10,10 +11,10 @@ var paths = strings.Split(PATH, ":")
 
 func findInPath(cmd string) (string, bool) {
 	for _, path := range paths {
-		file := path + "/" + cmd
-		fileInfo, err := os.Stat(file)
+		filePath := filepath.Join(path, cmd)
+		fileInfo, err := os.Stat(filePath)
 		if err == nil && fileInfo.Mode().Perm()&0111 != 0 {
-			return file, true
+			return filePath, true
 		}
 	}
 	return "", false
