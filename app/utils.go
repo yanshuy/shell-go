@@ -8,10 +8,11 @@ import (
 var PATH = os.Getenv("PATH")
 var paths = strings.Split(PATH, ":")
 
-func findInPath(bin string) (string, bool) {
+func findInPath(cmd string) (string, bool) {
 	for _, path := range paths {
-		file := path + "/" + bin
-		if _, err := os.Stat(file); err == nil {
+		file := path + "/" + cmd
+		fileInfo, err := os.Stat(file)
+		if err == nil && fileInfo.Mode().Perm()&0111 != 0 {
 			return file, true
 		}
 	}
