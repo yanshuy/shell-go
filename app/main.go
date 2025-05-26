@@ -39,6 +39,21 @@ func ParseInput(input string) ([]string, error) {
 			}
 			continue
 		}
+		if input[i] == '"' {
+			i++
+			for input[i] != '"' {
+				if input[i] == delimiter {
+					return nil, fmt.Errorf("no trailing double quote")
+				}
+				currentArg = append(currentArg, input[i])
+				i++
+			}
+			if i+1 < len(input) && input[i+1] != '"' {
+				argv = append(argv, string(currentArg))
+				currentArg = []byte{}
+			}
+			continue
+		}
 		if input[i] == ' ' {
 			if len(currentArg) > 0 {
 				argv = append(argv, string(currentArg))
