@@ -19,6 +19,43 @@ var builtinCmds = map[string]struct{}{
 	"cd":   {},
 }
 
+func ParseInput(input string) ([]string, error) {
+	var argv []string
+
+	currentArg := []byte{}
+	for i := 0; input[i] != delimiter; i++ {
+		if input[i] == '\'' {
+			i++
+			for input[i] != '\'' {
+				if input[i] == delimiter {
+					return nil, fmt.Errorf("no trailing single quote")
+				}
+				currentArg = append(currentArg, input[i])
+				i++
+			}
+			if i+1 < len(input) && input[i+1] != '\'' {
+				argv = append(argv, string(currentArg))
+				currentArg = []byte{}
+			}
+			continue
+		}
+		if input[i] == ' ' {
+			if len(currentArg) > 0 {
+				argv = append(argv, string(currentArg))
+				currentArg = []byte{}
+			}
+			continue
+		}
+		currentArg = append(currentArg, input[i])
+	}
+
+	if len(currentArg) > 0 {
+		argv = append(argv, string(currentArg))
+	}
+
+	return argv, nil
+}
+
 func main() {
 	for {
 		fmt.Fprint(os.Stdout, "$ ")
@@ -28,7 +65,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error reading input:", err)
 			os.Exit(1)
 		}
-		argv := strings.Fields(strings.Trim(inp, string(delimiter)))
+
+		argv, err := ParseInput(inp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "parse error: %s\n", err.Error())
+			continue
+		}
+		// fmt.Printf("parsed %#v\n", argv)
+		if len(argv) == 0 {
+			continue
+		}
 		cmd := argv[0]
 
 		switch cmd {
