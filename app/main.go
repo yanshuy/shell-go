@@ -16,6 +16,7 @@ var builtinCmds = map[string]struct{}{
 	"echo": {},
 	"type": {},
 	"pwd":  {},
+	"cd":   {},
 }
 
 func main() {
@@ -71,6 +72,19 @@ func main() {
 				continue
 			}
 			fmt.Println(pwd)
+
+		case "cd":
+			if len(argv) == 1 {
+				continue
+			}
+			if len(argv) > 2 {
+				fmt.Fprintln(os.Stderr, "too many arguments")
+			}
+			dir := argv[1]
+			if err := os.Chdir(dir); err != nil {
+				fmt.Fprintf(os.Stderr, "%s: %s: No such file or directory\n", cmd, dir)
+				continue
+			}
 
 		default:
 			if _, ok := findInPath(cmd); ok == true {
