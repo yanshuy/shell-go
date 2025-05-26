@@ -14,6 +14,7 @@ func main() {
 	cmds := map[string]struct{}{
 		"exit": {},
 		"echo": {},
+		"type": {},
 	}
 
 	for {
