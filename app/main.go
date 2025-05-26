@@ -81,6 +81,10 @@ func main() {
 				fmt.Fprintln(os.Stderr, "too many arguments")
 			}
 			dir := argv[1]
+			if dir[0] == '~' {
+				HOME := os.Getenv("HOME")
+				dir = strings.Replace(dir, "~", HOME, 1)
+			}
 			if err := os.Chdir(dir); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: %s: No such file or directory\n", cmd, dir)
 				continue
