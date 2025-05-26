@@ -11,6 +11,10 @@ import (
 var delimiter byte = '\n'
 
 func main() {
+	cmds := map[string]struct{}{
+		"exit": {},
+		"echo": {},
+	}
 
 	for {
 		fmt.Fprint(os.Stdout, "$ ")
@@ -21,8 +25,8 @@ func main() {
 			os.Exit(1)
 		}
 		inpArr := strings.Split(strings.Trim(inp, string(delimiter)), " ")
-		cmd := inpArr[0]
 
+		cmd := inpArr[0]
 		switch cmd {
 		case "exit":
 			code, err := strconv.Atoi(inpArr[1])
@@ -34,6 +38,15 @@ func main() {
 		case "echo":
 			str := strings.Join(inpArr[1:], " ")
 			fmt.Println(str)
+		case "type":
+			for i := 1; i < len(inpArr); i++ {
+				arg := inpArr[i]
+				if _, ok := cmds[arg]; ok != true {
+					fmt.Printf("type: %s: not found\n", arg)
+					continue
+				}
+				fmt.Printf("%s is a shell builtin\n", arg)
+			}
 		default:
 			fmt.Println(cmd + ": command not found")
 		}
