@@ -43,7 +43,7 @@ func main() {
 			for i := 1; i < len(inpArr); i++ {
 				arg := inpArr[i]
 				if _, ok := cmds[arg]; ok != true {
-					fmt.Printf("type: %s: not found\n", arg)
+					fmt.Printf("%s: not found\n", arg)
 					continue
 				}
 				fmt.Printf("%s is a shell builtin\n", arg)
