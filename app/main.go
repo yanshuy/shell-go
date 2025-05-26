@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -33,7 +34,7 @@ func ParseInput(input string) ([]string, error) {
 				currentArg = append(currentArg, input[i])
 				i++
 			}
-			if input[i+1] != '\'' {
+			if input[i+1] == ' ' {
 				argv = append(argv, string(currentArg))
 				currentArg = []byte{}
 			}
@@ -46,10 +47,32 @@ func ParseInput(input string) ([]string, error) {
 				if input[i] == delimiter {
 					return nil, fmt.Errorf("no trailing double quote")
 				}
+				if input[i] == '\\' {
+					if slices.Contains([]byte{'\\', '$', '`', '"', '\n'}, input[i+1]) {
+						i++
+					}
+				}
 				currentArg = append(currentArg, input[i])
+				if input[i] == '\'' {
+					i++
+					for input[i] != '\'' {
+						if input[i] == '"' {
+							break
+						}
+						if input[i] == delimiter {
+							return nil, fmt.Errorf("no trailing single quote and double quote")
+						}
+						currentArg = append(currentArg, input[i])
+						i++
+					}
+					if input[i] == '"' {
+						break
+					}
+					currentArg = append(currentArg, input[i])
+				}
 				i++
 			}
-			if input[i+1] != '"' {
+			if input[i+1] == ' ' {
 				argv = append(argv, string(currentArg))
 				currentArg = []byte{}
 			}
