@@ -33,12 +33,13 @@ func ParseInput(input string) ([]string, error) {
 				currentArg = append(currentArg, input[i])
 				i++
 			}
-			if i+1 < len(input) && input[i+1] != '\'' {
+			if input[i+1] != '\'' {
 				argv = append(argv, string(currentArg))
 				currentArg = []byte{}
 			}
 			continue
 		}
+
 		if input[i] == '"' {
 			i++
 			for input[i] != '"' {
@@ -48,12 +49,19 @@ func ParseInput(input string) ([]string, error) {
 				currentArg = append(currentArg, input[i])
 				i++
 			}
-			if i+1 < len(input) && input[i+1] != '"' {
+			if input[i+1] != '"' {
 				argv = append(argv, string(currentArg))
 				currentArg = []byte{}
 			}
 			continue
 		}
+
+		if input[i] == '\\' {
+			i++
+			currentArg = append(currentArg, input[i])
+			continue
+		}
+
 		if input[i] == ' ' {
 			if len(currentArg) > 0 {
 				argv = append(argv, string(currentArg))
@@ -61,6 +69,7 @@ func ParseInput(input string) ([]string, error) {
 			}
 			continue
 		}
+
 		currentArg = append(currentArg, input[i])
 	}
 
@@ -87,7 +96,7 @@ func main() {
 			continue
 		}
 		// fmt.Printf("parsed %#v\n", argv)
-		if len(argv) == 0 {
+		if len(argv) == 0 || argv[0] == " " {
 			continue
 		}
 		cmd := argv[0]
