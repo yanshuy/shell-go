@@ -4,16 +4,36 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 func main() {
+
 	for {
 		fmt.Fprint(os.Stdout, "$ ")
-		cmd, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		inp, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error reading input:", err)
 			os.Exit(1)
 		}
-		fmt.Println(cmd[:len(cmd)-1] + ": command not found")
+		inp = inp[:len(inp)-1]
+		inpArr := strings.Split(inp, " ")
+		cmd := inpArr[0]
+
+		switch cmd {
+		case "exit":
+			code, err := strconv.Atoi(inpArr[1])
+			fmt.Printf("%#v\n", inpArr)
+			if err != nil {
+				fmt.Println("invalid arguments expected a number")
+				continue
+			}
+			os.Exit(code)
+		default:
+			fmt.Println(cmd + ": command not found")
+		}
+
 	}
+
 }
