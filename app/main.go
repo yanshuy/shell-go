@@ -24,7 +24,6 @@ func main() {
 		switch cmd {
 		case "exit":
 			code, err := strconv.Atoi(inpArr[1])
-			fmt.Printf("%#v\n", inpArr)
 			if err != nil {
 				fmt.Println("invalid arguments expected a number")
 				continue
@@ -33,7 +32,6 @@ func main() {
 		default:
 			fmt.Println(cmd + ": command not found")
 		}
-
 	}
 
 }
