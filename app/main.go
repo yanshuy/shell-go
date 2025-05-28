@@ -112,7 +112,7 @@ func TypeCmd(options []string, args []string) (output string, err error) {
 			output = fmt.Sprintf("%s is %s\n", arg, file)
 			continue
 		}
-		err = fmt.Errorf("type: %s: not found\n", arg)
+		err = fmt.Errorf("%s: not found\n", arg)
 	}
 	return output, err
 }
