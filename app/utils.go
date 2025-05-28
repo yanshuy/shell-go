@@ -19,3 +19,17 @@ func findInPath(cmd string) (string, bool) {
 	}
 	return "", false
 }
+
+func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStream *os.File, err error) {
+	for _, redirect := range redirects {
+		switch redirect.Operator {
+		case ">", "1>":
+			file, err := os.Create(redirect.File)
+			if err != nil {
+				return nil, nil, err
+			}
+			outputStream = file
+		}
+	}
+	return outputStream, os.Stderr, nil
+}

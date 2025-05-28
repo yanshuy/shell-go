@@ -3,199 +3,154 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 )
-
-var delimiter byte = '\n'
-
-var builtinCmds = map[string]struct{}{
-	"exit": {},
-	"echo": {},
-	"type": {},
-	"pwd":  {},
-	"cd":   {},
-}
-
-func ParseInput(input string) ([]string, error) {
-	var argv []string
-
-	currentArg := []byte{}
-	for i := 0; input[i] != delimiter; i++ {
-		if input[i] == '\'' {
-			i++
-			for input[i] != '\'' {
-				if input[i] == delimiter {
-					return nil, fmt.Errorf("no trailing single quote")
-				}
-				currentArg = append(currentArg, input[i])
-				i++
-			}
-			if input[i+1] == ' ' {
-				argv = append(argv, string(currentArg))
-				currentArg = []byte{}
-			}
-			continue
-		}
-
-		if input[i] == '"' {
-			i++
-			for input[i] != '"' {
-				if input[i] == delimiter {
-					return nil, fmt.Errorf("no trailing double quote")
-				}
-				if input[i] == '\\' {
-					if slices.Contains([]byte{'\\', '$', '`', '"', '\n'}, input[i+1]) {
-						i++
-					}
-				}
-				currentArg = append(currentArg, input[i])
-				if input[i] == '\'' {
-					i++
-					for input[i] != '\'' {
-						if input[i] == '"' {
-							break
-						}
-						if input[i] == delimiter {
-							return nil, fmt.Errorf("no trailing single quote and double quote")
-						}
-						currentArg = append(currentArg, input[i])
-						i++
-					}
-					if input[i] == '"' {
-						break
-					}
-					currentArg = append(currentArg, input[i])
-				}
-				i++
-			}
-			if input[i+1] == ' ' {
-				argv = append(argv, string(currentArg))
-				currentArg = []byte{}
-			}
-			continue
-		}
-
-		if input[i] == '\\' {
-			i++
-			currentArg = append(currentArg, input[i])
-			continue
-		}
-
-		if input[i] == ' ' {
-			if len(currentArg) > 0 {
-				argv = append(argv, string(currentArg))
-				currentArg = []byte{}
-			}
-			continue
-		}
-
-		currentArg = append(currentArg, input[i])
-	}
-
-	if len(currentArg) > 0 {
-		argv = append(argv, string(currentArg))
-	}
-
-	return argv, nil
-}
 
 func main() {
 	for {
 		fmt.Fprint(os.Stdout, "$ ")
 
-		inp, err := bufio.NewReader(os.Stdin).ReadString(delimiter)
+		rawInput, err := bufio.NewReader(os.Stdin).ReadString(byte(delimiter))
 		if err != nil {
+			if err == io.EOF {
+				fmt.Println("exit")
+				os.Exit(0)
+			}
 			fmt.Fprintln(os.Stderr, "error reading input:", err)
 			os.Exit(1)
 		}
 
-		argv, err := ParseInput(inp)
+		command, redirects, err := ParseCommand(rawInput)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "parse error: %s\n", err.Error())
+			if err != ParseErrNoCommand {
+				fmt.Fprintf(os.Stderr, "parse error: %s\n", err.Error())
+			}
 			continue
 		}
-		// fmt.Printf("parsed %#v\n", argv)
-		if len(argv) == 0 || argv[0] == " " {
-			continue
-		}
-		cmd := argv[0]
+		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
 
+		outputStream := os.Stdout
+		errorStream := os.Stderr
+		defer outputStream.Close()
+		defer errorStream.Close()
+
+		if len(redirects) > 0 {
+			var err error
+			outputStream, errorStream, err = handleRedirection(redirects)
+			if err != nil {
+				fmt.Fprintf(errorStream, "%s\n", err.Error())
+				continue
+			}
+		}
+
+		cmd := command.Name
+
+		var output string = ""
+		var cmdErr error
 		switch cmd {
 		case "exit":
-			code := 0
-			if len(argv) > 1 {
-				code, err = strconv.Atoi(argv[1])
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "invalid arguments expected a number: %s", err.Error())
-					continue
-				}
-			}
-			os.Exit(code)
-
+			ExitCmd(command.Options, command.Args)
 		case "echo":
-			str := strings.Join(argv[1:], " ")
-			fmt.Println(str)
-
+			output, cmdErr = EchoCmd(command.Options, command.Args)
 		case "type":
-			if len(argv) == 1 {
-				continue
-			}
-			for i := 1; i < len(argv); i++ {
-				arg := argv[i]
-				if _, ok := builtinCmds[arg]; ok == true {
-					fmt.Printf("%s is a shell builtin\n", arg)
-					continue
-				}
-
-				if file, ok := findInPath(arg); ok == true {
-					fmt.Printf("%s is %s\n", arg, file)
-					continue
-				}
-				fmt.Printf("%s: not found\n", arg)
-			}
-
+			output, cmdErr = TypeCmd(command.Options, command.Args)
 		case "pwd":
-			pwd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				continue
-			}
-			fmt.Println(pwd)
-
+			output, cmdErr = PwdCmd(command.Options, command.Args)
 		case "cd":
-			if len(argv) == 1 {
-				continue
-			}
-			if len(argv) > 2 {
-				fmt.Fprintln(os.Stderr, "too many arguments")
-			}
-			dir := argv[1]
-			if dir[0] == '~' {
-				HOME := os.Getenv("HOME")
-				dir = strings.Replace(dir, "~", HOME, 1)
-			}
-			if err := os.Chdir(dir); err != nil {
-				fmt.Fprintf(os.Stderr, "%s: %s: No such file or directory\n", cmd, dir)
-				continue
-			}
-
+			cmdErr = CdCmd(command.Options, command.Args)
 		default:
-			if _, ok := findInPath(cmd); ok == true {
-				cmd := exec.Command(cmd, argv[1:]...)
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				err := cmd.Run()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error Executing: %v\n", err)
-				}
-				continue
+			ExternalCmd(cmd, command.Args, outputStream, errorStream)
+			continue
+		}
+
+		if cmdErr != nil {
+			fmt.Fprintf(errorStream, "%s\n", cmdErr.Error())
+		}
+		if output != "" {
+			if !strings.HasSuffix(output, "\n") {
+				fmt.Fprintln(outputStream, output)
+			} else {
+				fmt.Fprint(outputStream, output)
 			}
-			fmt.Fprintf(os.Stderr, "%s: command not found\n", cmd)
 		}
 	}
+}
 
+func ExitCmd(options []string, args []string) (err error) {
+	code := 0
+	if len(args) > 0 {
+		code, err = strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("invalid status expected a number: %s", err.Error())
+		}
+	}
+	os.Exit(code)
+	return nil
+}
+
+func EchoCmd(options []string, args []string) (string, error) {
+	str := strings.Join(args, " ")
+	return str, nil
+}
+
+func TypeCmd(options []string, args []string) (output string, err error) {
+	if len(args) == 0 {
+		return "", nil
+	}
+
+	for _, arg := range args {
+		if _, ok := builtins[arg]; ok {
+			output = fmt.Sprintf("%s is a shell builtin\n", arg)
+			continue
+		}
+
+		if file, ok := findInPath(arg); ok {
+			output = fmt.Sprintf("%s is %s\n", arg, file)
+			continue
+		}
+		err = fmt.Errorf("type: %s: not found\n", arg)
+	}
+	return output, err
+}
+
+func PwdCmd(options []string, args []string) (string, error) {
+	pwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("pwd: error: %v", err)
+	}
+	return pwd, nil
+}
+
+func CdCmd(options []string, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if len(args) > 1 {
+		return ErrTooManyArguments
+	}
+
+	dir := args[0]
+	if len(dir) > 0 && dir[0] == '~' {
+		HOME := os.Getenv("HOME")
+		dir = strings.Replace(dir, "~", HOME, 1)
+	}
+
+	if err := os.Chdir(dir); err != nil {
+		return fmt.Errorf("cd: %s: No such file or directory", dir)
+	}
+	return nil
+}
+
+func ExternalCmd(cmdName string, args []string, outputStream *os.File, errorStream *os.File) {
+	if _, ok := findInPath(cmdName); !ok {
+		fmt.Fprintf(errorStream, "%s: command not found", cmdName)
+	}
+	cmd := exec.Command(cmdName, args...)
+	cmd.Stdout = outputStream
+	cmd.Stderr = errorStream
+	cmd.Run()
 }
