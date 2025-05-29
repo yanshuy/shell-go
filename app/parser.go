@@ -46,10 +46,6 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	// arguments
 	var args []string
 	for runes[i] != delimiter {
-		if runes[i] == '>' {
-			break
-		}
-
 		arg, newPos, err := parseToken(runes, i, []rune{'>'})
 		if err != nil {
 			return cmd, nil, err
@@ -145,7 +141,7 @@ func parseToken(runes []rune, start int, stopChars []rune) (string, int, error) 
 			}
 			for _, stopChar := range stopChars {
 				if current == stopChar {
-					goto done // Break out of both loops
+					goto done 
 				}
 			}
 		}
