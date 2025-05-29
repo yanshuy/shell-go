@@ -22,6 +22,10 @@ func findInPath(cmd string) (string, bool) {
 
 func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStream *os.File, err error) {
 	for _, redirect := range redirects {
+		if redirect.File[0] == '~' {
+			HOME := os.Getenv("HOME")
+			redirect.File = strings.Replace(redirect.File, "~", HOME, 1)
+		}
 		switch redirect.Operator {
 		case ">", "1>":
 			file, err := os.Create(redirect.File)
@@ -29,6 +33,13 @@ func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStr
 				return nil, nil, err
 			}
 			outputStream = file
+
+		case "2>":
+			file, err := os.Create(redirect.File)
+			if err != nil {
+				return nil, nil, err
+			}
+			errorStream = file
 		}
 	}
 	return outputStream, os.Stderr, nil

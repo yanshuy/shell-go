@@ -70,12 +70,9 @@ func main() {
 		if cmdErr != nil {
 			fmt.Fprintf(errorStream, "%s\n", cmdErr.Error())
 		}
+		//output is expected to have the delimiter
 		if output != "" {
-			if !strings.HasSuffix(output, "\n") {
-				fmt.Fprintln(outputStream, output)
-			} else {
-				fmt.Fprint(outputStream, output)
-			}
+			fmt.Fprint(outputStream, output)
 		}
 	}
 }
@@ -93,7 +90,7 @@ func ExitCmd(options []string, args []string) (err error) {
 }
 
 func EchoCmd(options []string, args []string) (string, error) {
-	str := strings.Join(args, " ")
+	str := strings.Join(args, " ") + string(delimiter)
 	return str, nil
 }
 
@@ -112,7 +109,7 @@ func TypeCmd(options []string, args []string) (output string, err error) {
 			output = fmt.Sprintf("%s is %s\n", arg, file)
 			continue
 		}
-		err = fmt.Errorf("%s: not found\n", arg)
+		err = fmt.Errorf("%s: not found", arg)
 	}
 	return output, err
 }
