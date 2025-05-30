@@ -44,7 +44,6 @@ func tokenize(command string) []string {
 			} else {
 				s.push(r)
 			}
-			token.WriteRune(r)
 			continue
 		}
 
