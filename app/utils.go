@@ -40,7 +40,15 @@ func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStr
 				return nil, nil, err
 			}
 			errorStream = file
+
+		case ">>", "1>>":
+			file, err := os.Create(redirect.File)
+			if err != nil {
+				return nil, nil, err
+			}
+			errorStream = file
 		}
+
 	}
 	return outputStream, os.Stderr, nil
 }

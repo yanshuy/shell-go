@@ -172,6 +172,7 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 			} else {
 				return cmd, nil, ErrNoRedirectionFile
 			}
+			i++
 			continue
 		}
 
