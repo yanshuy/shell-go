@@ -21,5 +21,4 @@ var redirectionOperators = map[string]struct{}{
 var ParseErrNoCommand = errors.New("no command")
 var ParseErrNoTrailingQuote = errors.New("no trailing quote")
 var ErrTooManyArguments = errors.New("too many arguments")
-var ErrNoRedirectionFile = errors.New("no redirection file")
-var ErrArgsAfterRedirection = errors.New("arguments after redirection")
+var ErrNoRedirectionFile = errors.New("no file after redirection")

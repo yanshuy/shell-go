@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -15,169 +16,91 @@ type Redirection struct {
 	File     string
 }
 
-func ParseCommand(command string) (Command, []Redirection, error) {
-	var cmd Command
-	var redirects []Redirection
-
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return cmd, nil, ParseErrNoCommand
-	}
-
+func tokenize(command string) []string {
 	runes := []rune(command)
-	runes = append(runes, delimiter)
+	var tokens []string
 
-	i := 0
-	cmdName, newPos, err := parseToken(runes, i, []rune{'>'})
-	if err != nil {
-		return cmd, nil, err
-	}
-	if cmdName == "" {
-		return cmd, nil, ParseErrNoCommand
-	}
-
-	cmd.Name = cmdName
-	i = newPos
-
-	for unicode.IsSpace(runes[i]) && runes[i] != delimiter {
-		i++
-	}
-
-	// arguments
-	var args []string
-	for runes[i] != delimiter {
-		arg, newPos, err := parseToken(runes, i, []rune{'>'})
-		if err != nil {
-			return cmd, nil, err
-		}
-		if arg != "" {
-			args = append(args, arg)
-		}
-		i = newPos
-
-		if unicode.IsSpace(runes[i]) && runes[i] != delimiter {
-			i++
-		}
-	}
-	// fmt.Printf("before redirection %#v\n", args)
-
-	// redirection
-	for runes[i] == '>' {
-		var operator = ">"
-
-		if len(args) > 0 {
-			lastArg := args[len(args)-1]
-			if len(lastArg) > 0 {
-				lastChar := lastArg[len(lastArg)-1]
-				switch lastChar {
-				case '1':
-					operator = "1>"
-				case '2':
-					operator = "2>"
-				case '&':
-					operator = "&>"
-				}
-				if operator != ">" {
-					if len(lastArg) == 1 {
-						args = args[:len(args)-1]
-					} else {
-						args[len(args)-1] = lastArg[:len(lastArg)-1]
-					}
-				}
-			}
-		}
-		i++
-
-		for unicode.IsSpace(runes[i]) && runes[i] != delimiter {
-			i++
-		}
-
-		if runes[i] == delimiter {
-			return cmd, nil, ErrNoRedirectionFile
-		}
-
-		filePath, newPos, err := parseToken(runes, i, []rune{'>'})
-		if err != nil {
-			return cmd, nil, err
-		}
-		if filePath == "" {
-			return cmd, nil, ErrNoRedirectionFile
-		}
-
-		redirection := Redirection{
-			Operator: operator,
-			File:     filePath,
-		}
-		redirects = append(redirects, redirection)
-		i = newPos
-
-		for unicode.IsSpace(runes[i]) && runes[i] != delimiter {
-			i++
-		}
-	}
-	// fmt.Printf("%#v", args)
-
-	if runes[i] != delimiter {
-		return cmd, redirects, ErrArgsAfterRedirection
-	}
-
-	cmd.Args = args
-	return cmd, redirects, nil
-}
-
-// handling quotes
-func parseToken(runes []rune, start int, stopChars []rune) (string, int, error) {
 	s := newRuneStack()
-
 	var token strings.Builder
-	i := start
 
-	for runes[i] != delimiter {
-		current := runes[i]
-
-		if s.isEmpty() {
-			if unicode.IsSpace(current) {
-				break
-			}
-			for _, stopChar := range stopChars {
-				if current == stopChar {
-					goto done 
-				}
-			}
+	flushToken := func() {
+		if token.Len() > 0 {
+			tokens = append(tokens, token.String())
+			token.Reset()
 		}
+	}
 
-		if current == '\'' {
-			if s.top() == '\'' {
-				s.pop()
-			} else if s.top() == '"' {
-				token.WriteRune('\'')
-			} else {
-				s.push('\'')
-			}
-			i++
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if s.isEmpty() && unicode.IsSpace(r) && r != delimiter {
+			flushToken()
 			continue
 		}
 
-		if current == '"' {
-			if s.top() == '"' {
+		if r == '\'' || r == '"' {
+			if s.top() == r {
 				s.pop()
-			} else if s.top() == '\'' {
-				token.WriteRune('"')
 			} else {
-				s.push('"')
+				s.push(r)
 			}
-			i++
+			token.WriteRune(r)
 			continue
 		}
 
-		if current == '\\' {
+		if !s.isEmpty() {
+			token.WriteRune(r)
+			continue
+		}
+
+		switch r {
+		case '|':
+			flushToken()
+			tokens = append(tokens, "|")
+
+		case '&':
+			flushToken()
+			token.WriteRune('&')
+
+		case '1', '2':
+			if i+1 < len(runes) && (runes[i+1] == '<' || runes[i+1] == '>') {
+				flushToken()
+
+				token.WriteRune(r)
+				i++
+				r = runes[i]
+				token.WriteRune(r)
+				flushToken()
+			} else {
+				token.WriteRune(r)
+			}
+
+		case '<', '>':
+			switch token.String() {
+			case "&":
+				token.WriteRune(r)
+				flushToken()
+				continue
+			case "1", "2":
+				token.WriteRune(r)
+			default:
+				flushToken()
+				token.WriteRune(r)
+			}
+
+			if i+1 < len(runes) && runes[i+1] == '>' {
+				i++
+				token.WriteRune(runes[i])
+			}
+			flushToken()
+
+		case '\\':
 			if s.top() == '"' {
-				if runes[i+1] != delimiter {
+				if i+1 < len(runes) {
 					next := runes[i+1]
 					switch next {
-					case 'n':
-						token.WriteRune('\\')
-						token.WriteRune('n')
+					case '\n':
+						token.WriteRune('\n')
 					case '\\':
 						token.WriteRune('\\')
 					case '$':
@@ -189,56 +112,103 @@ func parseToken(runes []rune, start int, stopChars []rune) (string, int, error) 
 						token.WriteRune(next)
 					}
 
-					i += 2
-					continue
+					i++
 				}
 			} else if s.top() == '\'' {
 				token.WriteRune('\\')
-				i++
-				continue
 			} else {
 				if runes[i+1] != delimiter {
 					next := runes[i+1]
 					token.WriteRune(next)
-					i += 2
-					continue
+					i++
 				}
 			}
+
+		default:
+			token.WriteRune(r)
+		}
+	}
+
+	flushToken()
+	return tokens
+}
+
+func isRedirection(r string) bool {
+	return slices.Contains([]string{"1>", "2>", "&>", ">", ">>", "1>>", "2>>", "1<", "2<", "&<"}, r)
+}
+
+func ParseCommand(command string) (Command, []Redirection, error) {
+	var cmd Command
+	var redirections []Redirection
+
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return cmd, nil, ParseErrNoCommand
+	}
+
+	tokens := tokenize(command)
+
+	i := 0
+	cmdName := tokens[0]
+	cmd.Name = cmdName
+	i = 1
+
+	// arguments
+	var args []string
+	for i < len(tokens) {
+
+		if isRedirection(tokens[i]) {
+			operator := tokens[i]
+			if i+1 < len(tokens) {
+				i++
+				if isRedirection(tokens[i]) {
+					return cmd, nil, ErrNoRedirectionFile
+				}
+				redirection := Redirection{
+					Operator: operator,
+					File:     tokens[i],
+				}
+				redirections = append(redirections, redirection)
+			} else {
+				return cmd, nil, ErrNoRedirectionFile
+			}
+			continue
 		}
 
-		token.WriteRune(current)
+		arg := tokens[i]
+		args = append(args, arg)
 		i++
 	}
+	cmd.Args = args
 
-done:
-	if !s.isEmpty() {
-		return "", i, ParseErrNoTrailingQuote
-	}
-
-	return token.String(), i, nil
+	return cmd, redirections, nil
 }
 
 type runeStack struct {
 	stack []rune
 }
 
-func (rs *runeStack) top() rune {
-	if rs.isEmpty() {
+func (s *runeStack) top() rune {
+	if s.isEmpty() {
 		return 0
 	}
-	return rs.stack[len(rs.stack)-1]
+	return s.stack[len(s.stack)-1]
 }
-func (rs *runeStack) pop() {
-	if len(rs.stack) > 0 {
-		rs.stack = rs.stack[:len(rs.stack)-1]
+func (s *runeStack) pop() rune {
+	if s.isEmpty() {
+		return 0
 	}
+	top := s.stack[len(s.stack)-1]
+	s.stack = s.stack[:len(s.stack)-1]
+	return top
 }
-func (rs *runeStack) push(r rune) {
-	rs.stack = append(rs.stack, r)
+func (s *runeStack) push(r rune) {
+	s.stack = append(s.stack, r)
 }
-func (rs *runeStack) isEmpty() bool {
-	return len(rs.stack) == 0
+func (s *runeStack) isEmpty() bool {
+	return len(s.stack) == 0
 }
+
 func newRuneStack() runeStack {
 	stack := make([]rune, 0, 2)
 	return runeStack{
