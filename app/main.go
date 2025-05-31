@@ -31,7 +31,7 @@ func main() {
 			}
 			continue
 		}
-		fmt.Printf("parsed %#v\n%#v\n", command, redirects)
+		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
 
 		outputStream := os.Stdout
 		errorStream := os.Stderr
@@ -70,7 +70,7 @@ func main() {
 		if cmdErr != nil {
 			fmt.Fprintf(errorStream, "%s\n", cmdErr.Error())
 		}
-		//it is expected that output will have the delimiter
+		//output should have the delimiter
 		if output != "" {
 			fmt.Fprint(outputStream, output)
 		}
@@ -119,7 +119,7 @@ func PwdCmd(options []string, args []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("pwd: error: %v", err)
 	}
-	return pwd, nil
+	return pwd + "\n", nil
 }
 
 func CdCmd(options []string, args []string) error {

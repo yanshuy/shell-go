@@ -39,22 +39,19 @@ func tokenize(command string) []string {
 		}
 
 		if r == '\'' || r == '"' {
-			if s.top() == r {
-				s.pop()
-				if !s.isEmpty() {
+			if s.quote == r {
+				s = newRuneStack()
+			} else if s.top() == r {
+				if s.quote != r {
 					token.WriteRune(r)
 				}
+				s.pop(r)
 			} else {
-				if !s.isEmpty() {
+				s.push(r)
+				if s.quote != r {
 					token.WriteRune(r)
 				}
-				s.push(r)
 			}
-			continue
-		}
-
-		if !s.isEmpty() {
-			token.WriteRune(r)
 			continue
 		}
 
@@ -100,9 +97,10 @@ func tokenize(command string) []string {
 			flushToken()
 
 		case '\\':
-			if s.top() == '"' {
+			if s.quote == '"' {
 				if i+1 < len(runes) {
-					next := runes[i+1]
+					i++
+					next := runes[i]
 					switch next {
 					case '\n':
 						token.WriteRune('\n')
@@ -116,13 +114,11 @@ func tokenize(command string) []string {
 						token.WriteRune('\\')
 						token.WriteRune(next)
 					}
-
-					i++
 				}
-			} else if s.top() == '\'' {
+			} else if s.quote == '\'' {
 				token.WriteRune('\\')
 			} else {
-				if runes[i+1] != delimiter {
+				if i+1 < len(runes) {
 					next := runes[i+1]
 					token.WriteRune(next)
 					i++
@@ -152,6 +148,7 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	}
 
 	tokens := tokenize(command)
+	// fmt.Println(tokens)
 
 	i := 0
 	cmdName := tokens[0]
@@ -161,7 +158,6 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	// arguments
 	var args []string
 	for i < len(tokens) {
-
 		if isRedirection(tokens[i]) {
 			operator := tokens[i]
 			if i+1 < len(tokens) {
@@ -192,23 +188,27 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 
 type runeStack struct {
 	stack []rune
+	quote rune
 }
 
 func (s *runeStack) top() rune {
-	if s.isEmpty() {
+	if len(s.stack) == 0 {
 		return 0
 	}
 	return s.stack[len(s.stack)-1]
 }
-func (s *runeStack) pop() rune {
-	if s.isEmpty() {
-		return 0
+func (s *runeStack) pop(r rune) {
+	if len(s.stack) > 0 && s.stack[len(s.stack)-1] == r {
+		s.stack = s.stack[:len(s.stack)-1]
 	}
-	top := s.stack[len(s.stack)-1]
-	s.stack = s.stack[:len(s.stack)-1]
-	return top
+	if len(s.stack) == 0 {
+		s.quote = 0
+	}
 }
 func (s *runeStack) push(r rune) {
+	if len(s.stack) == 0 {
+		s.quote = r
+	}
 	s.stack = append(s.stack, r)
 }
 func (s *runeStack) isEmpty() bool {
