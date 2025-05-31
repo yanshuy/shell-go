@@ -31,7 +31,7 @@ func main() {
 			}
 			continue
 		}
-		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
+		fmt.Printf("parsed %#v\n%#v\n", command, redirects)
 
 		outputStream := os.Stdout
 		errorStream := os.Stderr
@@ -70,7 +70,7 @@ func main() {
 		if cmdErr != nil {
 			fmt.Fprintf(errorStream, "%s\n", cmdErr.Error())
 		}
-		//output is expected to have the delimiter
+		//it is expected that output will have the delimiter
 		if output != "" {
 			fmt.Fprint(outputStream, output)
 		}
@@ -144,7 +144,7 @@ func CdCmd(options []string, args []string) error {
 
 func ExternalCmd(cmdName string, args []string, outputStream *os.File, errorStream *os.File) {
 	if _, ok := findInPath(cmdName); !ok {
-		fmt.Fprintf(errorStream, "%s: command not found", cmdName)
+		fmt.Fprintf(errorStream, "%s: command not found\n", cmdName)
 	}
 	cmd := exec.Command(cmdName, args...)
 	cmd.Stdout = outputStream

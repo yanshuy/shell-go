@@ -41,7 +41,13 @@ func tokenize(command string) []string {
 		if r == '\'' || r == '"' {
 			if s.top() == r {
 				s.pop()
+				if !s.isEmpty() {
+					token.WriteRune(r)
+				}
 			} else {
+				if !s.isEmpty() {
+					token.WriteRune(r)
+				}
 				s.push(r)
 			}
 			continue
