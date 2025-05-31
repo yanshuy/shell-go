@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"unicode"
@@ -68,14 +69,8 @@ func tokenize(command string) []string {
 			if i+1 < len(runes) && (runes[i+1] == '<' || runes[i+1] == '>') {
 				flushToken()
 
-				token.WriteRune(r)
-				i++
-				r = runes[i]
-				token.WriteRune(r)
-				flushToken()
-			} else {
-				token.WriteRune(r)
 			}
+			token.WriteRune(r)
 
 		case '<', '>':
 			switch token.String() {
@@ -89,7 +84,6 @@ func tokenize(command string) []string {
 				flushToken()
 				token.WriteRune(r)
 			}
-
 			if i+1 < len(runes) && runes[i+1] == '>' {
 				i++
 				token.WriteRune(runes[i])
@@ -148,7 +142,7 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	}
 
 	tokens := tokenize(command)
-	// fmt.Println(tokens)
+	// fmt.Printf("%#v", tokens)/
 
 	i := 0
 	cmdName := tokens[0]
