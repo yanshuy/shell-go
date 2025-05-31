@@ -21,6 +21,9 @@ func findInPath(cmd string) (string, bool) {
 }
 
 func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStream *os.File, err error) {
+	outputStream = os.Stdout
+	errorStream = os.Stderr
+
 	for _, redirect := range redirects {
 		if redirect.File[0] == '~' {
 			HOME := os.Getenv("HOME")
