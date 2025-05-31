@@ -31,7 +31,7 @@ func main() {
 			}
 			continue
 		}
-		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
+		fmt.Printf("parsed %#v\n%#v\n", command, redirects)
 
 		outputStream := os.Stdout
 		errorStream := os.Stderr
