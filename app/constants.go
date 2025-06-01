@@ -5,11 +5,12 @@ import "errors"
 const delimiter rune = '\n'
 
 var builtins = map[string]struct{}{
-	"exit": {},
-	"echo": {},
-	"type": {},
-	"pwd":  {},
-	"cd":   {},
+	"exit":    {},
+	"echo":    {},
+	"type":    {},
+	"pwd":     {},
+	"cd":      {},
+	"history": {},
 }
 
 var redirectionOperators = map[string]struct{}{

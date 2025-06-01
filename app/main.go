@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+var history []string
+
 func main() {
 	for {
 		fmt.Fprint(os.Stdout, "$ ")
@@ -23,6 +25,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error reading input:", err)
 			os.Exit(1)
 		}
+		history = append(history, rawInput)
 
 		command, redirects, err := ParseCommand(rawInput)
 		if err != nil {
@@ -62,6 +65,8 @@ func main() {
 			output, cmdErr = PwdCmd(command.Options, command.Args)
 		case "cd":
 			cmdErr = CdCmd(command.Options, command.Args)
+		case "history":
+			output = historyCmd(command.Options, command.Args)
 		default:
 			ExternalCmd(cmd, command.Args, outputStream, errorStream)
 			continue
@@ -140,6 +145,16 @@ func CdCmd(options []string, args []string) error {
 		return fmt.Errorf("cd: %s: No such file or directory", dir)
 	}
 	return nil
+}
+
+func historyCmd(options []string, args []string) string {
+	var builder strings.Builder
+	for i, h := range history {
+		builder.WriteString(strconv.Itoa(i + 1))
+		builder.WriteString(" ")
+		builder.WriteString(h)
+	}
+	return builder.String()
 }
 
 func ExternalCmd(cmdName string, args []string, outputStream *os.File, errorStream *os.File) {

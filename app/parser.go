@@ -1,7 +1,6 @@
 package main
 
 import (
-
 	"slices"
 	"strings"
 	"unicode"
@@ -142,7 +141,7 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	}
 
 	tokens := tokenize(command)
-	// fmt.Printf("%#v", tokens)/
+	// fmt.Printf("%#v\n", tokens)
 
 	i := 0
 	cmdName := tokens[0]
