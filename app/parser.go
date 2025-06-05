@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"unicode"
@@ -20,7 +21,7 @@ func tokenize(command string) []string {
 	runes := []rune(command)
 	var tokens []string
 
-	s := newRuneStack()
+	var currentQuote rune = 0
 	var token strings.Builder
 
 	flushToken := func() {
@@ -33,24 +34,19 @@ func tokenize(command string) []string {
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 
-		if s.isEmpty() && unicode.IsSpace(r) && r != delimiter {
+		if currentQuote == 0 && unicode.IsSpace(r) && r != delimiter {
 			flushToken()
 			continue
 		}
 
 		if r == '\'' || r == '"' {
-			if s.quote == r {
-				s = newRuneStack()
-			} else if s.top() == r {
-				if s.quote != r {
-					token.WriteRune(r)
-				}
-				s.pop(r)
+
+			if currentQuote == 0 {
+				currentQuote = r
+			} else if currentQuote == r {
+				currentQuote = 0
 			} else {
-				s.push(r)
-				if s.quote != r {
-					token.WriteRune(r)
-				}
+				token.WriteRune(r)
 			}
 			continue
 		}
@@ -67,7 +63,6 @@ func tokenize(command string) []string {
 		case '1', '2':
 			if i+1 < len(runes) && (runes[i+1] == '<' || runes[i+1] == '>') {
 				flushToken()
-
 			}
 			token.WriteRune(r)
 
@@ -90,7 +85,7 @@ func tokenize(command string) []string {
 			flushToken()
 
 		case '\\':
-			if s.quote == '"' {
+			if currentQuote == '"' {
 				if i+1 < len(runes) {
 					i++
 					next := runes[i]
@@ -108,7 +103,7 @@ func tokenize(command string) []string {
 						token.WriteRune(next)
 					}
 				}
-			} else if s.quote == '\'' {
+			} else if currentQuote == '\'' {
 				token.WriteRune('\\')
 			} else {
 				if i+1 < len(runes) {
@@ -135,13 +130,8 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	var cmd Command
 	var redirections []Redirection
 
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return cmd, nil, ParseErrNoCommand
-	}
-
 	tokens := tokenize(command)
-	// fmt.Printf("%#v\n", tokens)
+	fmt.Printf("%#v\n", tokens)
 
 	i := 0
 	cmdName := tokens[0]
@@ -177,40 +167,4 @@ func ParseCommand(command string) (Command, []Redirection, error) {
 	cmd.Args = args
 
 	return cmd, redirections, nil
-}
-
-type runeStack struct {
-	stack []rune
-	quote rune
-}
-
-func (s *runeStack) top() rune {
-	if len(s.stack) == 0 {
-		return 0
-	}
-	return s.stack[len(s.stack)-1]
-}
-func (s *runeStack) pop(r rune) {
-	if len(s.stack) > 0 && s.stack[len(s.stack)-1] == r {
-		s.stack = s.stack[:len(s.stack)-1]
-	}
-	if len(s.stack) == 0 {
-		s.quote = 0
-	}
-}
-func (s *runeStack) push(r rune) {
-	if len(s.stack) == 0 {
-		s.quote = r
-	}
-	s.stack = append(s.stack, r)
-}
-func (s *runeStack) isEmpty() bool {
-	return len(s.stack) == 0
-}
-
-func newRuneStack() runeStack {
-	stack := make([]rune, 0, 2)
-	return runeStack{
-		stack: stack,
-	}
 }

@@ -1,4 +1,4 @@
-module github.com/codecrafters-io/shell-starter-go
+module yyy
 
 go 1.24.0
 

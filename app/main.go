@@ -1,46 +1,60 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
 
-var history []string
 
 func main() {
-	for {
-		fmt.Fprint(os.Stdout, "$ ")
+	fd := int(os.Stdin.Fd())
 
-		rawInput, err := bufio.NewReader(os.Stdin).ReadString(byte(delimiter))
+	if !term.IsTerminal(fd) {
+		fmt.Println("Stdin is not a terminal")
+		os.Exit(1)
+	}
+
+	prevState, err := term.MakeRaw(fd)
+	if err != nil {
+		fmt.Println("Error setting raw mode:", err)
+		os.Exit(1)
+	}
+	defer term.Restore(int(os.Stdin.Fd()), prevState)
+
+	t := term.NewTerminal(os.Stdin, "$ ")
+
+	
+	
+	for {
+		line, err := t.ReadLine()
 		if err != nil {
 			if err == io.EOF {
-				fmt.Println("exit")
-				os.Exit(0)
+				t.Write([]byte("exit\n"))
+				return
 			}
-			fmt.Fprintln(os.Stderr, "error reading input:", err)
-			os.Exit(1)
+			err := fmt.Sprintf("Error reading line: %v\n", err)
+			t.Write([]byte(err))
+			return
 		}
-		history = append(history, rawInput)
-
-		command, redirects, err := ParseCommand(rawInput)
-		if err != nil {
-			if err != ParseErrNoCommand {
-				fmt.Fprintf(os.Stderr, "parse error: %s\n", err.Error())
-			}
+		
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		
+		command, redirects, err := ParseCommand(line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "parse error: %s\n", err.Error())
+		}
 		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
-
+		
 		outputStream := os.Stdout
 		errorStream := os.Stderr
-		defer outputStream.Close()
-		defer errorStream.Close()
-
 		if len(redirects) > 0 {
 			var err error
 			outputStream, errorStream, err = handleRedirection(redirects)
@@ -49,9 +63,9 @@ func main() {
 				continue
 			}
 		}
-
+		
 		cmd := command.Name
-
+		
 		var output string = ""
 		var cmdErr error
 		switch cmd {
@@ -66,18 +80,26 @@ func main() {
 		case "cd":
 			cmdErr = CdCmd(command.Options, command.Args)
 		case "history":
-			output = historyCmd(command.Options, command.Args)
+			output, cmdErr = historyCmd(t.History, command.Options, command.Args)
 		default:
 			ExternalCmd(cmd, command.Args, outputStream, errorStream)
 			continue
 		}
-
+		
 		if cmdErr != nil {
 			fmt.Fprintf(errorStream, "%s\n", cmdErr.Error())
 		}
 		//output should have the delimiter
 		if output != "" {
+
 			fmt.Fprint(outputStream, output)
+		}
+
+		if outputStream != os.Stdout {
+			outputStream.Close()
+		}
+		if errorStream != os.Stderr {
+			errorStream.Close()
 		}
 	}
 }
@@ -147,14 +169,21 @@ func CdCmd(options []string, args []string) error {
 	return nil
 }
 
-func historyCmd(options []string, args []string) string {
+func historyCmd(h term.History, options []string, args []string) (string, error) {
 	var builder strings.Builder
-	for i, h := range history {
-		builder.WriteString(strconv.Itoa(i + 1))
-		builder.WriteString(" ")
-		builder.WriteString(h)
+	var offset = 0
+
+	if len(args) == 1 {
+		num, err := strconv.Atoi(args[0])
+		offset = h.Len() - num
+		if err != nil {
+			return "", fmt.Errorf("%s: invalid argument expected a number", args[0])
+		}
 	}
-	return builder.String()
+	for i := offset; i < h.Len(); i++ {
+		builder.WriteString(fmt.Sprintf("%d  %s", i+1, h.At(i)))
+	}
+	return builder.String(), nil
 }
 
 func ExternalCmd(cmdName string, args []string, outputStream *os.File, errorStream *os.File) {
