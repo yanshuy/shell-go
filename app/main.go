@@ -5,54 +5,43 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-
-	"golang.org/x/term"
 )
 
-
 func main() {
-	fd := int(os.Stdin.Fd())
+	doneChan := make(chan bool)
+	s := NewShell(doneChan)
 
-	if !term.IsTerminal(fd) {
-		fmt.Println("Stdin is not a terminal")
-		os.Exit(1)
-	}
-
-	prevState, err := term.MakeRaw(fd)
-	if err != nil {
-		fmt.Println("Error setting raw mode:", err)
-		os.Exit(1)
-	}
-	defer term.Restore(int(os.Stdin.Fd()), prevState)
-
-	t := term.NewTerminal(os.Stdin, "$ ")
-
-	
-	
+	var input string
 	for {
-		line, err := t.ReadLine()
+		line, err := s.ReadLine()
 		if err != nil {
 			if err == io.EOF {
-				t.Write([]byte("exit\n"))
-				return
+				fmt.Fprint(s, "(Ctrl+D) received. Exiting\n")
+			} else {
+				fmt.Fprintf(s, "Error reading line: %w\n", err)
 			}
-			err := fmt.Sprintf("Error reading line: %v\n", err)
-			t.Write([]byte(err))
-			return
+			break
 		}
-		
-		if strings.TrimSpace(line) == "" {
+
+		input = strings.TrimSpace(line)
+		if line == "" || line[:len(line)-1] == "|" {
 			continue
 		}
-		
-		command, redirects, err := ParseCommand(line)
+
+		commands, err := Parse(input)
+		if err == ErrUnexpectedEnd {
+			continue
+		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "parse error: %s\n", err.Error())
+			fmt.Fprintf(s, "parse error: %w\n", err)
 		}
 		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
-		
+
+		if len(commands) > 1 {
+			s.ExecutePipeline(commands)
+		}
+
 		outputStream := os.Stdout
 		errorStream := os.Stderr
 		if len(redirects) > 0 {
@@ -62,12 +51,14 @@ func main() {
 				fmt.Fprintf(errorStream, "%s\n", err.Error())
 				continue
 			}
+			defer outputStream.Close()
+			defer errorStream.Close()
 		}
-		
+
 		cmd := command.Name
-		
 		var output string = ""
 		var cmdErr error
+
 		switch cmd {
 		case "exit":
 			ExitCmd(command.Options, command.Args)
@@ -80,110 +71,52 @@ func main() {
 		case "cd":
 			cmdErr = CdCmd(command.Options, command.Args)
 		case "history":
-			output, cmdErr = historyCmd(t.History, command.Options, command.Args)
+			output, cmdErr = HistoryCmd(t.History, command.Options, command.Args)
 		default:
 			ExternalCmd(cmd, command.Args, outputStream, errorStream)
 			continue
 		}
-		
+
 		if cmdErr != nil {
 			fmt.Fprintf(errorStream, "%s\n", cmdErr.Error())
 		}
 		//output should have the delimiter
 		if output != "" {
-
 			fmt.Fprint(outputStream, output)
 		}
-
-		if outputStream != os.Stdout {
-			outputStream.Close()
-		}
-		if errorStream != os.Stderr {
-			errorStream.Close()
-		}
 	}
+	doneChan <- true
 }
 
-func ExitCmd(options []string, args []string) (err error) {
-	code := 0
-	if len(args) > 0 {
-		code, err = strconv.Atoi(args[0])
-		if err != nil {
-			return fmt.Errorf("invalid status expected a number: %s", err.Error())
-		}
-	}
-	os.Exit(code)
-	return nil
-}
+func executeCommand(command CommandWithIOSetup) {
+	cmdName := command.Name
 
-func EchoCmd(options []string, args []string) (string, error) {
-	str := strings.Join(args, " ") + string(delimiter)
-	return str, nil
-}
-
-func TypeCmd(options []string, args []string) (output string, err error) {
-	if len(args) == 0 {
-		return "", nil
-	}
-
-	for _, arg := range args {
-		if _, ok := builtins[arg]; ok {
-			output = fmt.Sprintf("%s is a shell builtin\n", arg)
-			continue
-		}
-
-		if file, ok := findInPath(arg); ok {
-			output = fmt.Sprintf("%s is %s\n", arg, file)
-			continue
-		}
-		err = fmt.Errorf("%s: not found", arg)
-	}
-	return output, err
-}
-
-func PwdCmd(options []string, args []string) (string, error) {
-	pwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("pwd: error: %v", err)
-	}
-	return pwd + "\n", nil
-}
-
-func CdCmd(options []string, args []string) error {
-	if len(args) == 0 {
-		return nil
-	}
-	if len(args) > 1 {
-		return ErrTooManyArguments
+	var output string = ""
+	var cmdErr error
+	switch cmdName {
+	case "exit":
+		ExitCmd(command.Options, command.Args)
+	case "echo":
+		output, cmdErr = EchoCmd(command.Options, command.Args)
+	case "type":
+		output, cmdErr = TypeCmd(command.Options, command.Args)
+	case "pwd":
+		output, cmdErr = PwdCmd(command.Options, command.Args)
+	case "cd":
+		cmdErr = CdCmd(command.Options, command.Args)
+	case "history":
+		output, cmdErr = s.HistoryCmd(command.Options, command.Args)
+	default:
+		ExternalCmd(cmdName, command.Args, command.Stdout, command.Stderr)
 	}
 
-	dir := args[0]
-	if len(dir) > 0 && dir[0] == '~' {
-		HOME := os.Getenv("HOME")
-		dir = strings.Replace(dir, "~", HOME, 1)
+	if cmdErr != nil {
+		fmt.Fprintf(command.Stderr, "%s\n", cmdErr.Error())
 	}
-
-	if err := os.Chdir(dir); err != nil {
-		return fmt.Errorf("cd: %s: No such file or directory", dir)
+	//output should have the delimiter
+	if output != "" {
+		fmt.Fprint(command.Stdout, output)
 	}
-	return nil
-}
-
-func historyCmd(h term.History, options []string, args []string) (string, error) {
-	var builder strings.Builder
-	var offset = 0
-
-	if len(args) == 1 {
-		num, err := strconv.Atoi(args[0])
-		offset = h.Len() - num
-		if err != nil {
-			return "", fmt.Errorf("%s: invalid argument expected a number", args[0])
-		}
-	}
-	for i := offset; i < h.Len(); i++ {
-		builder.WriteString(fmt.Sprintf("%d  %s", i+1, h.At(i)))
-	}
-	return builder.String(), nil
 }
 
 func ExternalCmd(cmdName string, args []string, outputStream *os.File, errorStream *os.File) {

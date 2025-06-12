@@ -18,7 +18,7 @@ func findInPath(cmd string) (string, bool) {
 		}
 	}
 	return "", false
-}
+}	
 
 func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStream *os.File, err error) {
 	outputStream = os.Stdout
