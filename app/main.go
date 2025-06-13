@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -14,12 +13,12 @@ func main() {
 
 	var input string
 	for {
-		line, err := s.ReadLine()
+		line, err := s.term.ReadLine()
 		if err != nil {
 			if err == io.EOF {
-				fmt.Fprint(s, "(Ctrl+D) received. Exiting\n")
+				fmt.Fprint(s.term, "(Ctrl+D) received. Exiting\n")
 			} else {
-				fmt.Fprintf(s, "Error reading line: %w\n", err)
+				fmt.Fprintf(s.term, "Error reading line: %w\n", err)
 			}
 			break
 		}
@@ -34,7 +33,7 @@ func main() {
 			continue
 		}
 		if err != nil {
-			fmt.Fprintf(s, "parse error: %w\n", err)
+			fmt.Fprintf(s.term, "parse error: %w\n", err)
 		}
 		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
 
@@ -86,45 +85,4 @@ func main() {
 		}
 	}
 	doneChan <- true
-}
-
-func executeCommand(command CommandWithIOSetup) {
-	cmdName := command.Name
-
-	var output string = ""
-	var cmdErr error
-	switch cmdName {
-	case "exit":
-		ExitCmd(command.Options, command.Args)
-	case "echo":
-		output, cmdErr = EchoCmd(command.Options, command.Args)
-	case "type":
-		output, cmdErr = TypeCmd(command.Options, command.Args)
-	case "pwd":
-		output, cmdErr = PwdCmd(command.Options, command.Args)
-	case "cd":
-		cmdErr = CdCmd(command.Options, command.Args)
-	case "history":
-		output, cmdErr = s.HistoryCmd(command.Options, command.Args)
-	default:
-		ExternalCmd(cmdName, command.Args, command.Stdout, command.Stderr)
-	}
-
-	if cmdErr != nil {
-		fmt.Fprintf(command.Stderr, "%s\n", cmdErr.Error())
-	}
-	//output should have the delimiter
-	if output != "" {
-		fmt.Fprint(command.Stdout, output)
-	}
-}
-
-func ExternalCmd(cmdName string, args []string, outputStream *os.File, errorStream *os.File) {
-	if _, ok := findInPath(cmdName); !ok {
-		fmt.Fprintf(errorStream, "%s: command not found\n", cmdName)
-	}
-	cmd := exec.Command(cmdName, args...)
-	cmd.Stdout = outputStream
-	cmd.Stderr = errorStream
-	cmd.Run()
 }

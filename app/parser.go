@@ -8,19 +8,6 @@ import (
 	"unicode"
 )
 
-type Command struct {
-	Name         string
-	Args         []string
-	Redirections []Redirection
-	Pipe         string
-	isBackground bool
-}
-type Redirection struct {
-	Source      string
-	Operator    string
-	Destination string
-}
-
 const delimiter rune = '\n'
 
 func tokenize(command string) ([]string, error) {
@@ -89,7 +76,6 @@ func tokenize(command string) ([]string, error) {
 				if _, err := strconv.Atoi(token.String()); err != nil {
 					flushToken()
 				}
-				token.WriteRune(' ') // for parsing ease
 				token.WriteRune('>')
 
 				if i+1 < len(runes) && runes[i+1] == '>' {
@@ -98,19 +84,25 @@ func tokenize(command string) ([]string, error) {
 				}
 				if i+1 < len(runes) && runes[i+1] == '&' {
 					i++
-					token.WriteRune(' ')
 					token.WriteRune('&')
-					for i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
-						i++
-						token.WriteRune(runes[i])
+					if i+1 < len(runes) {
+						if runes[i+1] == '-' {
+							i++
+							token.WriteRune(runes[i])
+						}
+						for i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
+							i++
+							token.WriteRune(runes[i])
+						}
 					}
 				}
 				flushToken()
 				i++
 
 			case '<':
-				flushToken()
-				token.WriteRune(' ')
+				if _, err := strconv.Atoi(token.String()); err != nil {
+					flushToken()
+				}
 				token.WriteRune('<')
 
 				if i+1 < len(runes) {
@@ -119,11 +111,16 @@ func tokenize(command string) ([]string, error) {
 						token.WriteRune(runes[i])
 					}
 					if runes[i] == '&' {
-						token.WriteRune(' ')
 						token.WriteRune('&')
-						for i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
-							i++
-							token.WriteRune(runes[i])
+						if i+1 < len(runes) {
+							if runes[i+1] == '-' {
+								i++
+								token.WriteRune(runes[i])
+							}
+							for i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
+								i++
+								token.WriteRune(runes[i])
+							}
 						}
 					}
 					goto flush
@@ -208,10 +205,15 @@ var redirectionOperators = map[string]bool{
 	"&>>": true,
 }
 
-var redirectionRe = regexp.MustCompile(`^(\d+|&)? (>>|<<|<<<|<>|>|<) (&\d+)?`)
+type CommandWRedirections struct {
+	Command      *Command
+	Redirections []Redirection
+}
 
-func Parse(command string) ([]*Command, error) {
-	var cmds []*Command
+var redirectionRe = regexp.MustCompile(`^(\d+|&)?(>>|<<|<<<|<>|>|<)(&\d+|&-)?`)
+
+func Parse(command string) ([]CommandWRedirections, error) {
+	var cmdsWR []CommandWRedirections
 	tokens, err := tokenize(command)
 	if err != nil {
 		return nil, err
@@ -219,23 +221,24 @@ func Parse(command string) ([]*Command, error) {
 	fmt.Printf("%#v\n", tokens)
 
 nextCommand:
-	var cmd *Command
+	var cmdWR CommandWRedirections
+	cmdWR.Command = NewCommand()
 	i := 0
 	for i < len(tokens) {
 		token := tokens[i]
 
 		if token == "&" {
-			cmd.isBackground = true
+			cmdWR.Command.isBackground = true
 			i++
 			continue
 		}
 
 		if token == "|" || token == "|&" {
-			if cmd == nil {
+			if cmdWR.Command.Name == "" {
 				return nil, fmt.Errorf("pipe without preceding command")
 			}
-			cmd.Pipe = token
-			cmds = append(cmds, cmd)
+			cmdWR.Command.Pipe = token
+			cmdsWR = append(cmdsWR, cmdWR)
 			i++
 			goto nextCommand
 		}
@@ -251,13 +254,20 @@ nextCommand:
 			op := matches[2]
 			if op[0] == '>' {
 				if matches[1] != "" {
-					redirection.Source = matches[1]
+					fd, _ := strconv.Atoi(matches[1])
+					redirection.Source = fd
 				} else {
-					redirection.Source = "1"
+					redirection.Source = 1
 				}
 
-				if matches[3] != "" {
-					redirection.Destination = matches[3][1:]
+				if matches[3] != "" && matches[3][0] == '&' {
+					dest := matches[3][1:]
+					if dest == "-" {
+						redirection.Destination = -1
+					} else {
+						fd, _ := strconv.Atoi(dest)
+						redirection.Destination = fd
+					}
 				} else {
 					if i+1 < len(tokens) {
 						i++
@@ -271,8 +281,14 @@ nextCommand:
 				if matches[1] != "" {
 					return nil, ErrBadFileDescriptor
 				}
-				if matches[3] != "" {
-					redirection.Source = matches[3][1:]
+				if matches[3] != "" && matches[3][0] == '&' {
+					dest := matches[3][1:]
+					if dest == "-" {
+						redirection.Source = -1
+					} else {
+						fd, _ := strconv.Atoi(dest)
+						redirection.Source = fd
+					}
 				} else {
 					if i+1 < len(tokens) {
 						i++
@@ -282,17 +298,17 @@ nextCommand:
 					}
 				}
 			}
-			cmd.Redirections = append(cmd.Redirections, redirection)
+			cmdWR.Redirections = append(cmdWR.Redirections, redirection)
 		}
 
-		if cmd.Name == "" {
-			cmd.Name = token
+		if cmdWR.Command.Name == "" {
+			cmdWR.Command.Name = token
 		} else {
-			cmd.Args = append(cmd.Args, token)
+			cmdWR.Command.Args = append(cmdWR.Command.Args, token)
 		}
 		i++
 	}
-	cmds = append(cmds, cmd)
+	cmdsWR = append(cmdsWR, cmdWR)
 
-	return cmds, nil
+	return cmdsWR, nil
 }

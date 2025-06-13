@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -17,7 +18,7 @@ type Shell struct {
 	builtins   map[string]builtinCmd
 }
 
-type builtinCmd func([]string, IOFiles) int
+type builtinCmd func(args []string, io CommandIO) int
 
 func NewShell(doneChan <-chan bool) *Shell {
 	fd := int(os.Stdin.Fd())
@@ -60,12 +61,43 @@ func NewShell(doneChan <-chan bool) *Shell {
 	return shell
 }
 
-func (s *Shell) Write(stream *os.File, str string) {
+func (s *Shell) Write(stream io.Writer, str string) {
 	if stream == os.Stderr || stream == os.Stdout {
 		s.term.Write([]byte(str))
 	} else {
 		fmt.Fprintf(stream, str)
 	}
+}
+
+type CommandIO struct {
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+type Command struct {
+	Name         string
+	Args         []string
+	io           CommandIO
+	isBackground bool
+	Pipe         string
+}
+
+func NewCommand() *Command {
+	return &Command{
+		io: CommandIO{
+			Stdin:  os.Stdin,
+			Stdout: os.Stdout,
+			Stderr: os.Stderr,
+		},
+		isBackground: false,
+	}
+}
+
+type Redirection struct {
+	Source      any
+	Operator    string
+	Destination any
 }
 
 func (s *Shell) ExecutePipeline(commands []*Command) {
@@ -103,29 +135,23 @@ func (s *Shell) ExecutePipeline(commands []*Command) {
 	// }
 }
 
-type IOFiles struct {
-	Stdin  *os.File
-	Stdout *os.File
-	Stderr *os.File
-}
-
-func (s *Shell) executeCommand(command *Command, f IOFiles) int {
+func (s *Shell) executeCommand(command *Command) int {
 	if builtin, exists := s.builtins[command.Name]; exists {
-		exitCode := builtin(command.Args, f)
+		exitCode := builtin(command.Args, command.io)
 		return exitCode
 	}
 
 	cmd := exec.Command(command.Name, command.Args...)
-	cmd.Stdin = f.Stdin
-	cmd.Stdout = f.Stdout
-	cmd.Stderr = f.Stderr
+	cmd.Stdin = command.io.Stdin
+	cmd.Stdout = command.io.Stdout
+	cmd.Stderr = command.io.Stderr
 
 	if err := cmd.Run(); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			return exitError.ExitCode()
 		}
 		if _, ok := err.(*exec.Error); ok {
-			s.Write(f.Stderr, fmt.Sprintf("%s: executable not found"))
+			s.Write(command.io.Stderr, fmt.Sprintf("%s: executable not found"))
 			return 127
 		}
 		fmt.Fprintf(os.Stderr, "Error executing '%s': %v\n", command.Name, err)
@@ -133,25 +159,10 @@ func (s *Shell) executeCommand(command *Command, f IOFiles) int {
 	}
 	return 0
 }
-func (s *Shell) executeExternalCommand(command *Command, f IOFiles) int {
-	cmd := exec.Command(command.Name, command.Args...)
-	cmd.Stdin = f.Stdin
-	cmd.Stdout = f.Stdout
-	cmd.Stderr = f.Stderr
 
-	if err := cmd.Run(); err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			return exitError.ExitCode()
-		}
-		fmt.Fprintf(os.Stderr, "Error executing '%s': %v\n", command.Name, err)
-		return 1
-	}
-	return 0
-}
-
-func (s *Shell) ExitCmd(args []string, f IOFiles) int {
+func (s *Shell) ExitCmd(args []string, io CommandIO) int {
 	if len(args) > 1 {
-		s.Write(f.Stderr, fmt.Sprintf("exit: %w\n", ErrTooManyArguments))
+		s.Write(io.Stderr, fmt.Sprintf("exit: %w\n", ErrTooManyArguments))
 		return 128
 	}
 
@@ -160,7 +171,7 @@ func (s *Shell) ExitCmd(args []string, f IOFiles) int {
 		var err error
 		code, err = strconv.Atoi(args[0])
 		if err != nil {
-			s.Write(f.Stderr, fmt.Sprintf("exit: Illegal number: %s\n", args[0]))
+			s.Write(io.Stderr, fmt.Sprintf("exit: Illegal number: %s\n", args[0]))
 			return 128
 		}
 	}
@@ -168,43 +179,43 @@ func (s *Shell) ExitCmd(args []string, f IOFiles) int {
 	return 0
 }
 
-func (s *Shell) EchoCmd(args []string, f IOFiles) int {
+func (s *Shell) EchoCmd(args []string, io CommandIO) int {
 	str := strings.Join(args, " ") + "\n"
-	s.Write(f.Stdout, str)
+	s.Write(io.Stdout, str)
 	return 0
 }
 
-func (s *Shell) TypeCmd(args []string, f IOFiles) int {
+func (s *Shell) TypeCmd(args []string, io CommandIO) int {
 	if len(args) == 0 {
 		return 0
 	}
 
 	for _, arg := range args {
 		if _, ok := s.builtins[arg]; ok {
-			s.Write(f.Stdout, fmt.Sprintf("%s is a shell builtin\n", arg))
+			s.Write(io.Stdout, fmt.Sprintf("%s is a shell builtin\n", arg))
 			continue
 		}
 		if file, ok := findInPath(arg); ok {
-			s.Write(f.Stdout, fmt.Sprintf("%s is %s\n", arg, file))
+			s.Write(io.Stdout, fmt.Sprintf("%s is %s\n", arg, file))
 			continue
 		} else {
-			s.Write(f.Stderr, fmt.Sprintf("type: %s: not found\n", arg)) // inconsistent error
+			s.Write(io.Stderr, fmt.Sprintf("type: %s: not found\n", arg)) // inconsistent error
 		}
 	}
 	return 0
 }
 
-func (s *Shell) PwdCmd(args []string, f IOFiles) int {
+func (s *Shell) PwdCmd(args []string, io CommandIO) int {
 	pwd, err := os.Getwd()
 	if err != nil {
-		s.Write(f.Stderr, fmt.Sprintf("pwd: %w\n", err))
+		s.Write(io.Stderr, fmt.Sprintf("pwd: %w\n", err))
 		return 1
 	}
-	s.Write(f.Stdout, pwd+"\n")
+	s.Write(io.Stdout, pwd+"\n")
 	return 0
 }
 
-func (s *Shell) CdCmd(args []string, f IOFiles) int {
+func (s *Shell) CdCmd(args []string, io CommandIO) int {
 	var dir string
 	if len(args) == 0 {
 		dir = os.Getenv("HOME")
@@ -213,7 +224,7 @@ func (s *Shell) CdCmd(args []string, f IOFiles) int {
 	}
 
 	if len(args) > 1 {
-		s.Write(f.Stderr, fmt.Sprintf("cd: %w\n", ErrTooManyArguments))
+		s.Write(io.Stderr, fmt.Sprintf("cd: %w\n", ErrTooManyArguments))
 		return 1
 	}
 
@@ -222,23 +233,23 @@ func (s *Shell) CdCmd(args []string, f IOFiles) int {
 		dir = strings.Replace(dir, "~", HOME, 1)
 	}
 	if err := os.Chdir(dir); err != nil {
-		s.Write(f.Stderr, fmt.Sprintf("cd: %s: No such file or directory", dir))
+		s.Write(io.Stderr, fmt.Sprintf("cd: %s: No such file or directory", dir))
 		return 127
 	}
 	return 0
 }
 
-func (s *Shell) envCmd(args []string, f IOFiles) int {
+func (s *Shell) envCmd(args []string, io CommandIO) int {
 	env := os.Environ()
 	for _, e := range env {
-		s.Write(f.Stdout, e)
+		s.Write(io.Stdout, e)
 	}
 	return 0
 }
 
-func (s *Shell) HistoryCmd(args []string, f IOFiles) int {
+func (s *Shell) HistoryCmd(args []string, io CommandIO) int {
 	if len(args) > 1 {
-		s.Write(f.Stderr, fmt.Sprintf("history: %w\n", ErrTooManyArguments))
+		s.Write(io.Stderr, fmt.Sprintf("history: %w\n", ErrTooManyArguments))
 		return 128
 	}
 
@@ -247,45 +258,88 @@ func (s *Shell) HistoryCmd(args []string, f IOFiles) int {
 		num, err := strconv.Atoi(args[0])
 		offset = s.term.History.Len() - num
 		if err != nil {
-			s.Write(f.Stderr, fmt.Sprintf("history: Illegal number: %s", args[0]))
+			s.Write(io.Stderr, fmt.Sprintf("history: Illegal number: %s", args[0]))
 			return 2
 		}
 	}
 
 	for i := offset; i < s.term.History.Len(); i++ {
-		s.Write(f.Stdout, fmt.Sprintf("%d  %s", i+1, s.term.History.At(i)))
+		s.Write(io.Stdout, fmt.Sprintf("%d  %s", i+1, s.term.History.At(i)))
 	}
 	return 0
 }
 
-func handleRedirections(redirections []Redirection) (*IOFiles, error) {
-	var files IOFiles
-	for _, redir := range redirections {
+func assignFileToCommand(cmd *exec.Cmd, fd int, file *os.File, stdin, stdout, stderr **os.File) {
+	if file == nil {
+		// Handle FD closing (>&- or <&-)
+		return
+	}
+
+	switch fd {
+	case 0:
+		*stdin = file
+	case 1:
+		*stdout = file
+	case 2:
+		*stderr = file
+	default:
+		// For FDs > 2, we'd need to use ExtraFiles
+		// This is a simplified implementation
+		fmt.Fprintf(os.Stderr, "Warning: FD %d redirection not fully supported\n", fd)
+	}
+}
+
+func getFileFromFD(fd int) *os.File {
+	switch fd {
+	case 0:
+		return os.Stdin
+	case 1:
+		return os.Stdout
+	case 2:
+		return os.Stderr
+	default:
+		fileName := fmt.Sprintf("/dev/fd/%d", fd)
+		return os.NewFile(uintptr(fd), fileName)
+	}
+}
+
+func handleRedirections(cmdWR CommandWRedirections) (*Command, error) {
+	var command = cmdWR.Command
+	for _, redir := range cmdWR.Redirections {
 		switch redir.Operator {
 		case ">", ">>":
-			sourceFD := 1
-			if redir.Source != "" {
+			var targetStream *io.Writer
+			
+			if fd, ok := redir.Source.(int); ok {
+				switch fd {
+				case 1:
+					targetStream = &command.io.Stdout
+				case 2:
+					targetStream = &command.io.Stderr
+				default:
+					return nil, fmt.Errorf("redirection error: unsupported source FD: %d", fd)
+				}
+			} else {
+				return nil, fmt.Errorf("redirection error: invalid source FD: %s", redir.Source)
+			}
+
+			var destFile *os.File
+			if fd, ok := redir.Destination.(int); ok {
+				destFile = getFileFromFD(fd)
+			} else {
+				flags := os.O_WRONLY | os.O_CREATE
+				if redir.Operator == ">>" {
+					flags |= os.O_APPEND
+				} else {
+					flags |= os.O_TRUNC
+				}
 				var err error
-				sourceFD, _ = strconv.Atoi(redir.Source)
+				destFile, err = os.OpenFile(redir.Destination.(string), flags, 0644)
 				if err != nil {
-					return nil, fmt.Errorf("redirection error: invalid source FD: %s", redir.Source)
+					return nil, fmt.Errorf("redirection error: cannot open file %s: %v", redir.Destination, err)
 				}
 			}
-
-			flags := os.O_WRONLY | os.O_CREATE
-			if redir.Operator == ">>" {
-				flags |= os.O_APPEND
-			} else {
-				flags |= os.O_TRUNC
-			}
-			file, err := os.OpenFile(redir.Destination, flags, 0644)
-			if err != nil {
-				return nil, fmt.Errorf("redirection error: cannot open file %s: %v", redir.Destination, err)
-			}
-
-			rh.openFiles = append(rh.openFiles, file)
-
-			assignFileFromFD(cmd, fd, file, &stdin, &stdout, &stderr)
+			*targetStream = destFile
 
 		case "<":
 			// Input redirection: [n]<file
