@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,47 +19,113 @@ func findInPath(cmd string) (string, bool) {
 		}
 	}
 	return "", false
-}	
+}
 
-func handleRedirection(redirects []Redirection) (outputStream *os.File, errorStream *os.File, err error) {
-	outputStream = os.Stdout
-	errorStream = os.Stderr
+type RedirectionHandler struct {
+	fds map[int]*os.File
+}
 
-	for _, redirect := range redirects {
-		if redirect.File[0] == '~' {
-			HOME := os.Getenv("HOME")
-			redirect.File = strings.Replace(redirect.File, "~", HOME, 1)
-		}
-		switch redirect.Operator {
-		case ">", "1>":
-			file, err := os.Create(redirect.File)
-			if err != nil {
-				return nil, nil, err
-			}
-			outputStream = file
-
-		case "2>":
-			file, err := os.Create(redirect.File)
-			if err != nil {
-				return nil, nil, err
-			}
-			errorStream = file
-
-		case ">>", "1>>":
-			file, err := os.OpenFile(redirect.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				return nil, nil, err
-			}
-			outputStream = file
-
-		case "2>>":
-			file, err := os.OpenFile(redirect.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				return nil, nil, err
-			}
-			errorStream = file
-		}
-
+func NewRedirectionHandler() *RedirectionHandler {
+	return &RedirectionHandler{
+		fds: map[int]*os.File{
+			0: os.Stdin,
+			1: os.Stdout,
+			2: os.Stderr,
+		},
 	}
-	return outputStream, errorStream, nil
+}
+
+func (rh *RedirectionHandler) Close() error {
+	var lastErr error
+	for fd, file := range rh.fds {
+		if fd > 2 && file != nil {
+			if err := file.Close(); err != nil {
+				lastErr = err
+			}
+		}
+	}
+	return lastErr
+}
+
+func (rh *RedirectionHandler) GetFD(fd int) *os.File {
+	if file, ok := rh.fds[fd]; ok {
+		return file
+	}
+	return nil
+}
+
+func (rh *RedirectionHandler) SetFD(fd int, file *os.File) {
+	rh.fds[fd] = file
+}
+
+func getFileFromFD(fd int) *os.File {
+	switch fd {
+	case -1:
+		devNull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		return devNull
+	case 0:
+		return os.Stdin
+	case 1:
+		return os.Stdout
+	case 2:
+		return os.Stderr
+	default:
+		fileName := fmt.Sprintf("/dev/fd/%d", fd)
+		return os.NewFile(uintptr(fd), fileName)
+	}
+}
+
+func HandleRedirections(cmdWR CommandWRedirections) (*Command, error) {
+	var pcommand = cmdWR.Command
+	for _, redir := range cmdWR.Redirections {
+		switch redir.Operator {
+		case ">", ">>":
+			sourceFD, _ := redir.Source.(int)
+
+			var destFile *os.File
+			var err error
+			if destFD, ok := redir.Destination.(int); ok {
+				destFile = getFileFromFD(destFD)
+			} else {
+				filename := redir.Destination.(string)
+				flags := os.O_WRONLY | os.O_CREATE
+				if redir.Operator == ">>" {
+					flags |= os.O_APPEND
+				} else {
+					flags |= os.O_TRUNC
+				}
+				destFile, err = os.OpenFile(filename, flags, 0644)
+				if err != nil {
+					return pcommand, fmt.Errorf("cannot open file %s: %v", filename, err)
+				}
+			}
+			pcommand.redirHandler.SetFD(sourceFD, destFile)
+
+		case "<":
+			destFD, _ := redir.Destination.(int)
+
+			var sourceFile *os.File
+			var err error
+			if sourceFD, ok := redir.Source.(int); ok {
+				sourceFile = getFileFromFD(sourceFD)
+			} else {
+				filename := redir.Source.(string)
+				sourceFile, err = os.OpenFile(filename, os.O_RDONLY, 0)
+				if err != nil {
+					return pcommand, fmt.Errorf("cannot open file %s: %v", filename, err)
+				}
+			}
+			pcommand.redirHandler.SetFD(destFD, sourceFile)
+
+		case "<<":
+			return rp.handleHeredoc(redir)
+		case "<<<":
+			return rp.handleHereString(redir)
+		case "<>":
+			return pcommand, fmt.Errorf("unsupported redirection operator: %s", redir.Operator)
+		default:
+			return pcommand, fmt.Errorf("unsupported redirection operator: %s", redir.Operator)
+		}
+	}
+	return pcommand, nil
 }

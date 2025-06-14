@@ -9,7 +9,7 @@ import (
 
 func main() {
 	doneChan := make(chan bool)
-	s := NewShell(doneChan)
+	s := NewShell()
 
 	var input string
 	for {
@@ -28,7 +28,7 @@ func main() {
 			continue
 		}
 
-		commands, err := Parse(input)
+		commands, err := ParseInput(input)
 		if err == ErrUnexpectedEnd {
 			continue
 		}

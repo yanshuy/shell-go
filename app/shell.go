@@ -6,32 +6,41 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 
 	"golang.org/x/term"
 )
 
 type Shell struct {
-	term       *term.Terminal
-	currentDir string
-	builtins   map[string]builtinCmd
+	term         *term.Terminal
+	jobs         map[int]*Pipeline
+	jobCounter   int
+	mu           sync.RWMutex
+	workingDir   string
+	env          map[string]string
+	builtins     map[string]BuiltinCmd
+	sigChan      chan os.Signal
+	lastExitCode int
 }
 
-type builtinCmd func(args []string, io CommandIO) int
+type BuiltinCmd func(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 
-func NewShell(doneChan <-chan bool) *Shell {
+func NewShell(doneChan <-chan bool) (*Shell, error) {
 	fd := int(os.Stdin.Fd())
 
 	if !term.IsTerminal(fd) {
-		fmt.Println("Stdin is not a terminal")
-		os.Exit(1)
+		return nil, errors.New("stdin is not a terminal")
 	}
+
+	t := term.NewTerminal(os.Stdin, "$ ")
 
 	prevState, err := term.MakeRaw(fd)
 	if err != nil {
-		fmt.Println("Error setting raw mode:", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("error setting raw mode: %w", err)
 	}
 
 	go func() {
@@ -39,26 +48,103 @@ func NewShell(doneChan <-chan bool) *Shell {
 		term.Restore(int(os.Stdin.Fd()), prevState)
 	}()
 
-	t := term.NewTerminal(os.Stdin, "$ ")
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
+	}
 
 	shell := &Shell{
-		term:       t,
-		currentDir: ".",
+		term:         t,
+		jobs:         make(map[int]*Job),
+		jobCounter:   1,
+		env:          make(map[string]string),
+		workingDir:   wd,
+		lastExitCode: 0,
+		sigChan:      make(chan os.Signal, 1),
 	}
 
-	builtins := map[string]builtinCmd{
-		"exit":    shell.ExitCmd,
-		"echo":    shell.EchoCmd,
-		"type":    shell.TypeCmd,
-		"pwd":     shell.PwdCmd,
-		"cd":      shell.CdCmd,
-		"env":     shell.envCmd,
-		"history": shell.HistoryCmd,
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			shell.env[parts[0]] = parts[1]
+		}
 	}
+	shell.env["SHELL"] = "goson"
 
-	shell.builtins = builtins
+	signal.Notify(shell.sigChan, syscall.SIGINT, syscall.SIGTSTP, syscall.SIGCHLD)
+	go func() {
+		for sig := range shell.sigChan {
+			switch sig {
+			case syscall.SIGINT:
+				shell.handleSIGINT()
+			case syscall.SIGTSTP:
+				shell.handleSIGTSTP()
+			case syscall.SIGCHLD:
+				shell.handleSIGCHLD()
+			case syscall.SIGTERM:
+				shell.handleSIGCHLD()
+			}
+		}
+	}()
 
-	return shell
+	shell.builtins = map[string]BuiltinFunc{
+		"exit":    s.Exit,
+		"echo":    s.Echo,
+		"type":    s.Type,
+		"pwd":     s.Pwd,
+		"cd":      s.Cd,
+		"env":     s.Env,
+		"history": s.History,
+		"export":  s.Export,
+		"unset":   s.Unset,
+		"jobs":    s.Jobs,
+		"fg":      s.Fg,
+		"bg":      s.Bg,
+		"kill":    s.Kill,
+	}
+	return shell, nil
+}
+
+func (s *Shell) handleSIGINT() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, job := range s.jobs {
+		if !job.Background && job.Status == JobRunning {
+			job.ProcessGroup.Signal(syscall.SIGINT)
+			break
+		}
+	}
+}
+
+func (s *Shell) handleSIGTSTP() {
+	// Stop current foreground job
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, job := range s.jobs {
+		if !job.Background && job.Status == JobRunning {
+			job.ProcessGroup.Signal(syscall.SIGTSTP)
+			job.Status = JobStopped
+			fmt.Printf("\n[%d]+  Stopped    %s\n", job.ID, job.String())
+			break
+		}
+	}
+}
+
+func (s *Shell) handleSIGCHLD() {
+	// Clean up completed background jobs
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for id, job := range s.jobs {
+		if job.Background && job.Pipeline.IsCompleted() {
+			exitCode, _ := job.Pipeline.Wait()
+			job.Status = JobCompleted
+			fmt.Printf("[%d]   Done (%d)   %s\n", job.ID, exitCode, job.String())
+			delete(s.jobs, id)
+		}
+	}
 }
 
 func (s *Shell) Write(stream io.Writer, str string) {
@@ -69,35 +155,30 @@ func (s *Shell) Write(stream io.Writer, str string) {
 	}
 }
 
-type CommandIO struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-}
-
 type Command struct {
-	Name         string
-	Args         []string
-	io           CommandIO
-	isBackground bool
-	Pipe         string
+	Name     string
+	Args     []string
+	Stdin    io.Reader
+	Stdout   io.Writer
+	Stderr   io.Writer
+	extraFDs map[int]*os.File
+
+	Process  *os.Process
+	exitCode int
+	done     chan struct{}
 }
 
-func NewCommand() *Command {
+func NewCommand(name string, args []string) *Command {
 	return &Command{
-		io: CommandIO{
-			Stdin:  os.Stdin,
-			Stdout: os.Stdout,
-			Stderr: os.Stderr,
-		},
-		isBackground: false,
+		Name:     name,
+		Args:     args,
+		Stdin:    os.Stdin,
+		Stdout:   os.Stdout,
+		Stderr:   os.Stderr,
+		extraFDs: make(map[int]*io.ReadWriter),
+		done:     make(chan struct{}),
+		exitCode: -1,
 	}
-}
-
-type Redirection struct {
-	Source      any
-	Operator    string
-	Destination any
 }
 
 func (s *Shell) ExecutePipeline(commands []*Command) {
@@ -137,7 +218,7 @@ func (s *Shell) ExecutePipeline(commands []*Command) {
 
 func (s *Shell) executeCommand(command *Command) int {
 	if builtin, exists := s.builtins[command.Name]; exists {
-		exitCode := builtin(command.Args, command.io)
+		exitCode := builtin(command.Args, command.done)
 		return exitCode
 	}
 
@@ -269,58 +350,30 @@ func (s *Shell) HistoryCmd(args []string, io CommandIO) int {
 	return 0
 }
 
-func assignFileToCommand(cmd *exec.Cmd, fd int, file *os.File, stdin, stdout, stderr **os.File) {
-	if file == nil {
-		// Handle FD closing (>&- or <&-)
-		return
-	}
-
-	switch fd {
-	case 0:
-		*stdin = file
-	case 1:
-		*stdout = file
-	case 2:
-		*stderr = file
-	default:
-		// For FDs > 2, we'd need to use ExtraFiles
-		// This is a simplified implementation
-		fmt.Fprintf(os.Stderr, "Warning: FD %d redirection not fully supported\n", fd)
-	}
-}
-
-func getFileFromFD(fd int) *os.File {
-	switch fd {
-	case 0:
-		return os.Stdin
-	case 1:
-		return os.Stdout
-	case 2:
-		return os.Stderr
-	default:
-		fileName := fmt.Sprintf("/dev/fd/%d", fd)
-		return os.NewFile(uintptr(fd), fileName)
-	}
-}
-
 func handleRedirections(cmdWR CommandWRedirections) (*Command, error) {
-	var command = cmdWR.Command
+	var pcommand = cmdWR.Command
 	for _, redir := range cmdWR.Redirections {
 		switch redir.Operator {
 		case ">", ">>":
 			var targetStream *io.Writer
-			
+
 			if fd, ok := redir.Source.(int); ok {
 				switch fd {
 				case 1:
-					targetStream = &command.io.Stdout
+					targetStream = &pcommand.io.Stdout
 				case 2:
-					targetStream = &command.io.Stderr
+					targetStream = &pcommand.io.Stderr
 				default:
-					return nil, fmt.Errorf("redirection error: unsupported source FD: %d", fd)
+					file := getFileFromFD(fd)
+					if file != nil {
+						var a io.Writer = file
+						targetStream = &a
+					} else {
+						return nil, fmt.Errorf("redirection error: cannot get file for FD: %d", fd)
+					}
 				}
 			} else {
-				return nil, fmt.Errorf("redirection error: invalid source FD: %s", redir.Source)
+				return nil, fmt.Errorf("redirection error: invalid source FD: %v", redir.Source)
 			}
 
 			var destFile *os.File
@@ -342,40 +395,37 @@ func handleRedirections(cmdWR CommandWRedirections) (*Command, error) {
 			*targetStream = destFile
 
 		case "<":
-			// Input redirection: [n]<file
-			fd, file, err := rh.handleInputRedirection(redir)
-			if err != nil {
-				return fmt.Errorf("input redirection error: %v", err)
-			}
-			rh.assignFileToCommand(cmd, fd, file, &stdin, &stdout, &stderr)
+			var targetStream *io.Reader
 
-		case ">&":
-			// Duplicate output file descriptor: [n]>&m
-			fd, file, err := rh.handleFDDuplication(redir, true)
-			if err != nil {
-				return fmt.Errorf("output FD duplication error: %v", err)
+			if fd, ok := redir.Destination.(int); ok {
+				switch fd {
+				case 0:
+					targetStream = &pcommand.io.Stdin
+				default:
+					return nil, fmt.Errorf("redirection error: unsupported target FD: %d", fd)
+				}
+			} else {
+				return nil, fmt.Errorf("redirection error: invalid target FD: %s", redir.Source)
 			}
-			rh.assignFileToCommand(cmd, fd, file, &stdin, &stdout, &stderr)
 
-		case "<&":
-			// Duplicate input file descriptor: [n]<&m
-			fd, file, err := rh.handleFDDuplication(redir, false)
-			if err != nil {
-				return fmt.Errorf("input FD duplication error: %v", err)
+			var sourceFile *os.File
+			if fd, ok := redir.Source.(int); ok {
+				sourceFile = getFileFromFD(fd)
+			} else {
+				var err error
+				sourceFile, err = os.OpenFile(redir.Source.(string), os.O_RDONLY, 0644)
+				if err != nil {
+					return nil, fmt.Errorf("redirection error: cannot open file %s: %v", redir.Source, err)
+				}
 			}
-			rh.assignFileToCommand(cmd, fd, file, &stdin, &stdout, &stderr)
+			*targetStream = sourceFile
 
 		default:
-			return fmt.Errorf("unsupported redirection operator: %s", redir.Operator)
+			return nil, fmt.Errorf("unsupported redirection operator: %s", redir.Operator)
 		}
 	}
 
-	// Assign final file descriptors to command
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	return &files, nil
+	return pcommand, nil
 }
 
 var ErrUnexpectedEnd = errors.New("unexpected end of input")
