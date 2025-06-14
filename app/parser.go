@@ -78,41 +78,12 @@ func tokenize(command string) ([]string, error) {
 				}
 				token.WriteRune('>')
 
-				if i+1 < len(runes) && runes[i+1] == '&' {
-					i++
-					token.WriteRune('&')
-					if i+1 < len(runes) {
-						if runes[i+1] == '-' {
-							i++
-							token.WriteRune(runes[i])
-						} else {
-							for i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
-								i++
-								token.WriteRune(runes[i])
-							}
-						}
-					}
-				} else if i+1 < len(runes) && runes[i+1] == '>' {
-					i++
-					token.WriteRune(runes[i])
-				}
-
-				flushToken()
-				i++
-
-			case '<':
-				if _, err := strconv.Atoi(token.String()); err != nil {
-					flushToken()
-				}
-				token.WriteRune('<')
-
 				if i+1 < len(runes) {
-					if runes[i+1] == '>' {
-						i++
-						token.WriteRune(runes[i])
-					} else if runes[i+1] == '&' {
+					switch runes[i+1] {
+					case '&':
 						i++
 						token.WriteRune('&')
+
 						if i+1 < len(runes) {
 							if runes[i+1] == '-' {
 								i++
@@ -124,25 +95,53 @@ func tokenize(command string) ([]string, error) {
 								}
 							}
 						}
-					}
-					goto flush
-				}
-
-				if i+1 < len(runes) && runes[i+1] == '<' {
-					i++
-					token.WriteRune(runes[i])
-					if i+1 < len(runes) && runes[i+1] == '-' {
+					case '>':
 						i++
 						token.WriteRune(runes[i])
-						goto flush
 					}
 				}
-				if runes[i+1] == '<' {
-					i++
-					token.WriteRune(runes[i])
-				}
+				flushToken()
+				i++
 
-			flush:
+			case '<':
+				if _, err := strconv.Atoi(token.String()); err != nil {
+					flushToken()
+				}
+				token.WriteRune('<')
+
+				if i+1 < len(runes) {
+					switch runes[i+1] {
+					case '>':
+						i++
+						token.WriteRune(runes[i])
+
+					case '&':
+						i++
+						token.WriteRune('&')
+
+						if i+1 < len(runes) {
+							if runes[i+1] == '-' {
+								i++
+								token.WriteRune(runes[i])
+							} else {
+								for i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
+									i++
+									token.WriteRune(runes[i])
+								}
+							}
+						}
+
+					case '<':
+						i++
+						token.WriteRune(runes[i])
+
+						if i+1 < len(runes) && (runes[i+1] == '-' || runes[i+1] == '<') {
+							i++
+							token.WriteRune(runes[i])
+						}
+
+					}
+				}
 				flushToken()
 				i++
 
@@ -267,7 +266,7 @@ func (s *Shell) ParseInput(command string) ([]*ParsedCommand, error) {
 					i++
 					redirection.Destination = tokens[i]
 				} else {
-					return nil, fmt.Errorf("unexpected token `newline` after %s", tokens[i])
+					return nil, fmt.Errorf("syntax error no file after %s", op)
 				}
 
 			case ">&":
@@ -281,7 +280,9 @@ func (s *Shell) ParseInput(command string) ([]*ParsedCommand, error) {
 				}
 
 				dest := matches[3]
-				if dest == "-" {
+				if dest == "" {
+					return nil, fmt.Errorf("syntax error no FD after &")
+				} else if dest == "-" {
 					redirection.Destination = -1
 				} else {
 					fd, _ := strconv.Atoi(dest)
@@ -303,7 +304,7 @@ func (s *Shell) ParseInput(command string) ([]*ParsedCommand, error) {
 					i++
 					redirection.Source = tokens[i]
 				} else {
-					return nil, fmt.Errorf("syntax error near unexpected token unexpected token `newline` after %s", tokens[i])
+					return nil, fmt.Errorf("syntax error unexpected token `newline` after %s", tokens[i])
 				}
 
 			case "<&":
