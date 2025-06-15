@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,20 +15,26 @@ import (
 )
 
 type Shell struct {
-	term         *term.Terminal
-	jobs         map[int]*Pipeline
-	jobCounter   int
-	mu           sync.RWMutex
-	workingDir   string
-	env          map[string]string
-	builtins     map[string]BuiltinCmd
-	sigChan      chan os.Signal
-	lastExitCode int
+	term          *term.Terminal
+	termPrevState *term.State
+	jobs          map[int]*Pipeline
+	jobCounter    int
+	mu            sync.RWMutex
+	workingDir    string
+	env           map[string]string
+	builtins      map[string]BuiltinCmd
+	sigChan       chan os.Signal
+	lastExitCode  int
 }
 
-type BuiltinCmd func(args []string, stdin io.Reader, stdout, stderr io.Writer) int
+func (s *Shell) Close() {
+	term.Restore(int(os.Stdin.Fd()), s.termPrevState)
+}
 
-func NewShell(doneChan <-chan bool) (*Shell, error) {
+var promptDefault string = "$"
+var promptNextLine string = ">"
+
+func NewShell() (*Shell, error) {
 	fd := int(os.Stdin.Fd())
 
 	if !term.IsTerminal(fd) {
@@ -43,24 +48,20 @@ func NewShell(doneChan <-chan bool) (*Shell, error) {
 		return nil, fmt.Errorf("error setting raw mode: %w", err)
 	}
 
-	go func() {
-		<-doneChan
-		term.Restore(int(os.Stdin.Fd()), prevState)
-	}()
-
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get working directory: %w", err)
 	}
 
 	shell := &Shell{
-		term:         t,
-		jobs:         make(map[int]*Job),
-		jobCounter:   1,
-		env:          make(map[string]string),
-		workingDir:   wd,
-		lastExitCode: 0,
-		sigChan:      make(chan os.Signal, 1),
+		term:          t,
+		termPrevState: prevState,
+		jobs:          make(map[int]*Job),
+		jobCounter:    1,
+		env:           make(map[string]string),
+		workingDir:    wd,
+		lastExitCode:  0,
+		sigChan:       make(chan os.Signal, 1),
 	}
 
 	for _, env := range os.Environ() {
@@ -70,22 +71,6 @@ func NewShell(doneChan <-chan bool) (*Shell, error) {
 		}
 	}
 	shell.env["SHELL"] = "goson"
-
-	signal.Notify(shell.sigChan, syscall.SIGINT, syscall.SIGTSTP, syscall.SIGCHLD)
-	go func() {
-		for sig := range shell.sigChan {
-			switch sig {
-			case syscall.SIGINT:
-				shell.handleSIGINT()
-			case syscall.SIGTSTP:
-				shell.handleSIGTSTP()
-			case syscall.SIGCHLD:
-				shell.handleSIGCHLD()
-			case syscall.SIGTERM:
-				shell.handleSIGCHLD()
-			}
-		}
-	}()
 
 	shell.builtins = map[string]BuiltinFunc{
 		"exit":    s.Exit,
@@ -104,6 +89,93 @@ func NewShell(doneChan <-chan bool) (*Shell, error) {
 	}
 	return shell, nil
 }
+
+func (s *Shell) Run() error {
+	var inputSequence string
+	var parsedInputSeq *ParsedInputSequence
+	var currentInput string
+
+	for {
+		line, err := s.term.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				if inputSequence == "" {
+					// Likely Ctrl+D - exit
+					fmt.Fprint(s.term, "(Ctrl+D) received. Exiting\n")
+					os.Exit(0)
+				} else {
+					// Likely Ctrl+C - interrupt and continue
+					fmt.Fprint(s.term, "^C\n")
+					// if s. != nil {
+					//     s.currentCommand.Process.Signal(os.Interrupt)
+					// }
+					goto reset
+				}
+			} else {
+				return err
+			}
+		}
+
+		inputSequence += " " + line
+		currentInput = strings.TrimSpace(inputSequence)
+		if line == "" {
+			continue
+		}
+
+		parsedInputSeq, err = s.ParseInput(currentInput)
+		if err == ErrUnexpectedEnd {
+			s.term.SetPrompt(promptNextLine)
+			continue
+		}
+		if err != nil {
+			fmt.Fprintf(s.term, "parse error: %w\n", err)
+			goto reset
+		}
+		// fmt.Printf("parsed %#v\n%#v\n", command, redirects)
+
+		err = s.executeSequence(parsedInputSeq)
+		if err != nil {
+			fmt.Fprintf(s.term, "execution error: %v\n", err)
+			s.lastExitCode = 1
+		}
+		// handle job or command
+
+	reset:
+		inputSequence = ""
+		s.term.SetPrompt(promptDefault)
+	}
+}
+
+func (s *Shell) executeSequence(seq *ParsedInputSequence) error {
+	if len(seq.ParsedCommands) == 1 && len(seq.Operators) == 0 {
+		return s.executeCommand(&seq.ParsedCommands[0], false)
+	}
+
+	// Handle pipeline
+	return s.executePipeline(seq)
+}
+
+func (s *Shell) executeCommand(cmd *ParsedCommand, isSubshell bool) error {
+	// Execute external command
+	if cmd.isBackground {
+		// make a new subshell
+		if builtin, ok := s.builtins[cmd.Name]; ok {
+			builtin()
+			s.lastExitCode = builtin(cmd.Args)
+			return nil
+		}
+	} else {
+		if builtin, ok := s.builtins[cmd.Name]; ok {
+			builtin()
+			s.lastExitCode = builtin(cmd.Args)
+			return nil
+		}
+	}
+
+	return s.executeForegroundCommand(cmd)
+}
+
+type BuiltinCmd func(args []string, stdin io.Reader, stdout, stderr io.Writer) int
 
 func (s *Shell) handleSIGINT() {
 	s.mu.RLock()

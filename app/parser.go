@@ -8,8 +8,6 @@ import (
 	"unicode"
 )
 
-const delimiter rune = '\n'
-
 func tokenize(command string) ([]string, error) {
 	runes := []rune(command)
 	var tokens []string
@@ -176,6 +174,8 @@ func tokenize(command string) ([]string, error) {
 							token.WriteRune('\\')
 							token.WriteRune(next)
 						}
+					} else {
+						return tokens, ErrUnexpectedEnd
 					}
 				} else if currentQuote == '\'' {
 					token.WriteRune('\\')
@@ -198,149 +198,270 @@ type ParsedCommand struct {
 	Name         string
 	Args         []string
 	Redirections []Redirection
-	PipeOperator string
 	isBackground bool
 }
 
-type Redirection struct {
-	Type        string
-	Source      any
-	Destination any
-	Content     string
+type ParsedInputSequence struct {
+	ParsedCommands []ParsedCommand
+	Operators      []string
 }
 
 var redirectAttemptRe = regexp.MustCompile(`^(\d+)?(>|<)`)
-var redirectionRe = regexp.MustCompile(`^(\d+|&)?(>>|<<-?|<<<|<&|>&|>|<|<>)(\d+)?`)
+var redirectionRe = regexp.MustCompile(`^(\d+)?(>>|<<-?|<<<|<&-?|>&-?|>|<|<>)(\d+)?`)
 
-func (s *Shell) ParseInput(command string) ([]*ParsedCommand, error) {
-	var parsedCmds []*ParsedCommand
+func (s *Shell) ParseInput(command string) (*ParsedInputSequence, error) {
 	tokens, err := tokenize(command)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("%#v\n", tokens)
+	fmt.Fprintf(s.term,"%#v\n", tokens)
 
-	parsedCmd := &ParsedCommand{}
+	sequence := &ParsedInputSequence{
+		ParsedCommands: []ParsedCommand{},
+		Operators:      []string{},
+	}
+
+	parsedCmd := ParsedCommand{}
 	i := 0
 	for i < len(tokens) {
 		token := tokens[i]
 
-		if token == "&" {
+		switch token {
+		case "&":
 			parsedCmd.isBackground = true
-			i++
-			continue
-		}
 
-		if token == "|" || token == "|&" {
-			if parsedCmd.Name == "" {
-				return nil, fmt.Errorf("pipe without preceding command")
+		case "|", "|&", "&&", "||", ";":
+			if parsedCmd.Name == "" && len(parsedCmd.Redirections) == 0 {
+				return nil, fmt.Errorf("%s without preceding command", token)
 			}
-			parsedCmd.PipeOperator = token
-			parsedCmds = append(parsedCmds, parsedCmd)
-			parsedCmd = &ParsedCommand{}
-			i++
-		}
+			sequence.ParsedCommands = append(sequence.ParsedCommands, parsedCmd)
+			sequence.Operators = append(sequence.Operators, token)
 
-		if redirectAttemptRe.MatchString(token) {
-			matches := redirectionRe.FindStringSubmatch(token)
-			// matches[0] full
-			// matches[2] Operator
-			// matches[1] source, matches[3] Destination
+			parsedCmd = ParsedCommand{}
 
-			var redirection Redirection
-			redirection.Type = matches[2]
-
-			op := matches[2]
-			switch op {
-			case ">", ">>":
-				if matches[1] == "&" {
-					redirection.Source = matches[1]
-				} else if matches[1] != "" {
-					fd, _ := strconv.Atoi(matches[1])
-					redirection.Source = fd
+		default:
+			if matches := redirectionRe.FindStringSubmatch(token); matches != nil {
+				var nextToken string
+				// next token == "" if dont need next token
+				if matches[3] != "" || matches[2] == ">&-" || matches[2] == "<&-" {
+					nextToken = ""
 				} else {
-					redirection.Source = 1
-				}
-
-				if i+1 < len(tokens) {
-					i++
-					redirection.Destination = tokens[i]
-				} else {
-					return nil, fmt.Errorf("syntax error no file after %s", op)
-				}
-
-			case ">&":
-				if matches[1] == "&" {
-					redirection.Source = matches[1]
-				} else if matches[1] != "" {
-					fd, _ := strconv.Atoi(matches[1])
-					redirection.Source = fd
-				} else {
-					redirection.Source = 1
-				}
-
-				dest := matches[3]
-				if dest == "" {
-					return nil, fmt.Errorf("syntax error no FD after &")
-				} else if dest == "-" {
-					redirection.Destination = -1
-				} else {
-					fd, _ := strconv.Atoi(dest)
-					redirection.Destination = fd
-				}
-
-			case "<":
-				if matches[1] != "" {
-					fd, _ := strconv.Atoi(matches[1])
-					if fd == 1 || fd == 2 {
-						return nil, ErrBadFileDescriptor
+					if i+1 >= len(tokens) {
+						return nil, fmt.Errorf("syntax error: unexpected token `newline` after %s", token)
 					}
-					redirection.Destination = fd
-				} else {
-					redirection.Destination = 0
-				}
 
-				if i+1 < len(tokens) {
-					i++
-					redirection.Source = tokens[i]
-				} else {
-					return nil, fmt.Errorf("syntax error unexpected token `newline` after %s", tokens[i])
-				}
-
-			case "<&":
-				if matches[1] != "" {
-					fd, _ := strconv.Atoi(matches[1])
-					if fd == 1 || fd == 2 {
-						return nil, ErrBadFileDescriptor
+					if isOperator(tokens[i+1]) {
+						return nil, fmt.Errorf("syntax error: unexpected token `%s` after %s", nextToken, matches[2])
 					}
-					redirection.Destination = fd
-				} else {
-					redirection.Destination = 0
+					nextToken = tokens[i+1]
+					i++
 				}
 
-				dest := matches[3][1:]
-				if dest == "-" {
-					redirection.Source = -1
-				} else {
-					fd, _ := strconv.Atoi(dest)
-					redirection.Source = fd
+				redirection, err := s.getRedirection(matches, nextToken)
+				if err != nil {
+					return nil, err
 				}
+				parsedCmd.Redirections = append(parsedCmd.Redirections, redirection)
 
-			case "<<":
-
+			} else {
+				if parsedCmd.Name == "" {
+					parsedCmd.Name = token
+				} else {
+					parsedCmd.Args = append(parsedCmd.Args, token)
+				}
 			}
-			parsedCmd.Redirections = append(parsedCmd.Redirections, redirection)
-
-		}
-
-		if parsedCmd.Name == "" {
-			parsedCmd.Name = token
-		} else {
-			parsedCmd.Args = append(parsedCmd.Args, token)
 		}
 		i++
 	}
-	parsedCmds = append(parsedCmds, parsedCmd)
 
-	return parsedCmds, nil
+	if parsedCmd.Name != "" || len(parsedCmd.Redirections) > 0 {
+		sequence.ParsedCommands = append(sequence.ParsedCommands, parsedCmd)
+	}
+
+	if len(sequence.Operators) != len(sequence.ParsedCommands)-1 {
+		return nil, ErrUnexpectedEnd
+	}
+
+	return sequence, nil
 }
+
+func isOperator(token string) bool {
+	switch token {
+	case "|", "|&", "&&", "||", ";", "&":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Shell) getRedirection(matches []string, nextToken string) (Redirection, error) {
+	// matches[0] full
+	// matches[2] Operator
+	// matches[1] source, matches[3] Destination
+	op := matches[2]
+
+	switch op {
+	case ">", ">>":
+		sourceFD := 1
+		if matches[1] != "" {
+			fd, _ := strconv.Atoi(matches[1])
+			sourceFD = fd
+		}
+
+		return &OutputRedirection{
+			Operator:   op,
+			SourceFD:   sourceFD,
+			TargetFile: nextToken,
+			TargetFD:   nil,
+		}, nil
+
+	case ">&":
+		sourceFD := 1
+		if matches[1] != "" {
+			fd, _ := strconv.Atoi(matches[1])
+			sourceFD = fd
+		}
+
+		targetFD, _ := strconv.Atoi(matches[3])
+
+		return &OutputRedirection{
+			Operator:   op,
+			SourceFD:   sourceFD,
+			TargetFile: "",
+			TargetFD:   &targetFD,
+		}, nil
+
+	case ">&-":
+		targetFD := 1
+		if matches[1] != "" {
+			fd, _ := strconv.Atoi(matches[1])
+			targetFD = fd
+		}
+
+		return &RedirectionCloser{
+			Operator: op,
+			TargetFD: targetFD,
+		}, nil
+
+	case "<&-":
+		targetFD := 0
+		if matches[1] != "" {
+			fd, _ := strconv.Atoi(matches[1])
+			targetFD = fd
+		}
+
+		return &RedirectionCloser{
+			Operator: op,
+			TargetFD: targetFD,
+		}, nil
+
+	case "<":
+		targetFD := 0
+		if matches[1] != "" {
+			targetFD, _ = strconv.Atoi(matches[1])
+		}
+
+		return &InputRedirection{
+			Operator:   op,
+			TargetFD:   targetFD,
+			SourceFile: nextToken,
+			SourceFD:   nil,
+		}, nil
+
+	case "<&":
+		targetFD := 0
+		if matches[1] != "" {
+			targetFD, _ = strconv.Atoi(matches[1])
+		}
+
+		sourceFD, _ := strconv.Atoi(nextToken)
+		return &InputRedirection{
+			Operator:   op,
+			TargetFD:   targetFD,
+			SourceFile: "",
+			SourceFD:   &sourceFD,
+		}, nil
+
+	case "<<", "<<-":
+		targetFD := 0
+		if matches[1] != "" {
+			targetFD, _ = strconv.Atoi(matches[1])
+		}
+
+		delimiter := nextToken
+		var content strings.Builder
+		s.term.SetPrompt(promptNextLine)
+		for {
+			line, err := s.term.ReadLine()
+			if err != nil {
+				return nil, fmt.Errorf("Error reading line '%s'", delimiter)
+			}
+
+			if line == delimiter {
+				break
+			}
+			content.WriteString(line)
+			content.WriteString("\n")
+		}
+		s.term.SetPrompt(promptDefault)
+
+		return &HereRedirection{
+			Operator: op,
+			TargetFD: targetFD,
+			Content:  content.String(),
+		}, nil
+
+	case "<<<":
+		targetFD := 0
+		if matches[1] != "" {
+			targetFD, _ = strconv.Atoi(matches[1])
+		}
+
+		content := nextToken
+		return &HereRedirection{
+			Operator: op,
+			TargetFD: targetFD,
+			Content:  content,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported operator: %s", op)
+	}
+}
+
+type Redirection interface {
+	GetType() string
+}
+
+type OutputRedirection struct {
+	Operator   string
+	SourceFD   int
+	TargetFile string
+	TargetFD   *int
+}
+
+func (r *OutputRedirection) GetType() string { return "output" }
+
+type InputRedirection struct {
+	Operator   string
+	TargetFD   int
+	SourceFile string
+	SourceFD   *int
+}
+
+func (r *InputRedirection) GetType() string { return "input" }
+
+type RedirectionCloser struct {
+	Operator string
+	TargetFD int
+}
+
+func (r *RedirectionCloser) GetType() string { return "closer" }
+
+type HereRedirection struct {
+	Operator string
+	TargetFD int
+	Content  string
+}
+
+func (r *HereRedirection) GetType() string { return "here" }

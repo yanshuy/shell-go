@@ -21,6 +21,7 @@ func findInPath(cmd string) (string, bool) {
 	return "", false
 }
 
+
 type RedirectionHandler struct {
 	fds map[int]*os.File
 }
